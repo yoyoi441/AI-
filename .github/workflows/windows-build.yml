@@ -1,0 +1,65 @@
+name: Windows build and release
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore TokenMihariban.sln
+
+      - name: Build
+        run: dotnet build TokenMihariban.sln --configuration Release --no-restore
+
+      - name: Publish self-contained app
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME -match '^v(.+)$') { $Matches[1] } else { '0.1.0' }
+          dotnet publish TokenMihariban/TokenMihariban.csproj --configuration Release -p:PublishProfile=win-x64 -p:Version=$version
+
+      - name: Upload portable app
+        uses: actions/upload-artifact@v4
+        with:
+          name: TokenMihariban-windows-x64
+          path: TokenMihariban/bin/Release/net8.0-windows/win-x64/publish/
+
+      - name: Install Inno Setup
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "installer\TokenMihariban.iss"
+
+      - name: Upload installer artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: TokenMiharibanSetup
+          path: installer/Output/TokenMiharibanSetup.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME "installer/Output/TokenMiharibanSetup.exe" --generate-notes --title $env:GITHUB_REF_NAME
