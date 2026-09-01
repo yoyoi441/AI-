@@ -7,3 +7,7 @@ artifacts/
 *.pfx
 *.snk
 .env
+.build/
+.swiftpm/
+TokenMihariban/firebase.config.json
+macOS/TokenMihariban/GoogleService-Info.plist

@@ -42,6 +42,7 @@ public partial class SettingsWindow : Window
         Tabs.Items.Add(new TabItem { Header = L.String("appearanceTab", lang), Content = BuildAppearanceTab() });
         Tabs.Items.Add(new TabItem { Header = L.String("displayItemsTab", lang), Content = BuildDisplayItemsTab() });
         Tabs.Items.Add(new TabItem { Header = L.String("tokenTargetTab", lang), Content = BuildTokenTargetTab() });
+        Tabs.Items.Add(new TabItem { Header = L.String("deviceSyncTab", lang), Content = BuildSyncTab() });
         Tabs.Items.Add(new TabItem { Header = L.String("exportTab", lang), Content = BuildExportTab() });
     }
 
@@ -110,7 +111,7 @@ public partial class SettingsWindow : Window
         stack.Children.Add(Toggle(L.String("launchAtLogin", lang), LaunchAtLogin.IsEnabled, enabled => LaunchAtLogin.SetEnabled(enabled)));
         stack.Children.Add(FooterNote(L.String("launchAtLoginNote", lang)));
 
-        stack.Children.Add(SectionHeader(L.String("updatesHeader", lang)));
+        stack.Children.Add(SectionHeader(L.String("rescanHeader", lang)));
         var intervalLabel = new TextBlock { Text = L.String("rescanIntervalFormat", lang, (int)_app.Monitor.RefreshIntervalSeconds) };
         stack.Children.Add(intervalLabel);
         var slider = new Slider { Minimum = 30, Maximum = 600, Value = _app.Monitor.RefreshIntervalSeconds, TickFrequency = 30, IsSnapToTickEnabled = true, Margin = new Thickness(0, 4, 0, 4) };
@@ -187,6 +188,89 @@ public partial class SettingsWindow : Window
             enabled => settings.SetBool("notificationsEnabled", enabled)));
         stack.Children.Add(FooterNote(L.String("notificationsNote", lang)));
 
+        return Scroll(stack);
+    }
+
+    // MARK: - Device sync
+
+    private UIElement BuildSyncTab()
+    {
+        var lang = Lang;
+        var stack = new StackPanel();
+        stack.Children.Add(SectionHeader(L.String("deviceSyncHeader", lang)));
+
+        if (!_app.Monitor.IsDeviceSyncAvailable)
+        {
+            stack.Children.Add(new TextBlock { Text = L.String("syncUnavailable", lang), Foreground = Brushes.DarkOrange, TextWrapping = TextWrapping.Wrap });
+            stack.Children.Add(FooterNote(L.String("syncUnavailableNote", lang)));
+            return Scroll(stack);
+        }
+
+        if (_app.Monitor.SyncPairingCode is { } code)
+        {
+            var codeRow = new StackPanel { Orientation = Orientation.Horizontal };
+            codeRow.Children.Add(new TextBlock { Text = code, FontSize = 23, FontWeight = FontWeights.Bold, FontFamily = new System.Windows.Media.FontFamily("Consolas"), VerticalAlignment = VerticalAlignment.Center });
+            var copyButton = new Button { Content = L.String("copy", lang), Margin = new Thickness(12, 0, 0, 0), Padding = new Thickness(10, 4, 10, 4) };
+            copyButton.Click += (_, _) =>
+            {
+                System.Windows.Clipboard.SetText(code);
+                copyButton.Content = L.String("copied", lang);
+            };
+            codeRow.Children.Add(copyButton);
+            stack.Children.Add(codeRow);
+            stack.Children.Add(FooterNote(L.String("pairingCodeNoteWindows", lang)));
+
+            var syncNow = new Button { Content = L.String("syncNow", lang), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 16, 0, 0), Padding = new Thickness(10, 4, 10, 4) };
+            var status = new TextBlock { Opacity = 0.7, Margin = new Thickness(0, 6, 0, 0) };
+            syncNow.Click += async (_, _) =>
+            {
+                syncNow.IsEnabled = false;
+                status.Text = L.String("syncing", lang);
+                var succeeded = await _app.Monitor.SyncNowAsync();
+                status.Text = L.String(succeeded ? "syncComplete" : "syncFailed", lang);
+                syncNow.IsEnabled = true;
+            };
+            stack.Children.Add(syncNow);
+            stack.Children.Add(status);
+
+            var unpair = new Button { Content = L.String("unpairWindows", lang), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 18, 0, 0), Padding = new Thickness(10, 4, 10, 4) };
+            unpair.Click += (_, _) =>
+            {
+                _app.Monitor.SetSyncPairingCode(null);
+                Rebuild();
+            };
+            stack.Children.Add(unpair);
+        }
+        else
+        {
+            var create = new Button { Content = L.String("createNewCode", lang), HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 4, 10, 4) };
+            create.Click += (_, _) =>
+            {
+                _app.Monitor.CreateSyncPairingCode();
+                Rebuild();
+            };
+            stack.Children.Add(create);
+            stack.Children.Add(FooterNote(L.String("createNewCodeNote", lang)));
+
+            stack.Children.Add(SectionHeader(L.String("joinExistingHeader", lang)));
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            var input = new TextBox { Width = 180, MaxLength = 8, CharacterCasing = System.Windows.Controls.CharacterCasing.Upper, Padding = new Thickness(5), FontFamily = new System.Windows.Media.FontFamily("Consolas") };
+            var connect = new Button { Content = L.String("connect", lang), Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(10, 4, 10, 4) };
+            var validation = new TextBlock { Foreground = Brushes.DarkOrange, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap };
+            connect.Click += (_, _) =>
+            {
+                if (_app.Monitor.SetSyncPairingCode(input.Text)) Rebuild();
+                else validation.Text = L.String("invalidPairingCode", lang);
+            };
+            row.Children.Add(input);
+            row.Children.Add(connect);
+            stack.Children.Add(row);
+            stack.Children.Add(validation);
+            stack.Children.Add(FooterNote(L.String("enterCodeNoteWindows", lang)));
+        }
+
+        stack.Children.Add(SectionHeader(L.String("syncPrivacyHeader", lang)));
+        stack.Children.Add(FooterNote(L.String("syncPrivacyNote", lang)));
         return Scroll(stack);
     }
 

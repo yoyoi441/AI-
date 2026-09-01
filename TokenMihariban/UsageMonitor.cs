@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using TokenMihariban.Logic;
 using TokenMihariban.Models;
@@ -43,6 +44,7 @@ public sealed class UsageMonitor : IDisposable
     private FileSystemWatcher? _codexWatcher;
     private System.Threading.Timer? _debounceTimer;
     private readonly object _debounceLock = new();
+    private readonly object _refreshLock = new();
 
     private readonly List<UsageEvent> _allEvents = new();
     private readonly Dictionary<string, long> _fileOffsets = new();
@@ -56,6 +58,12 @@ public sealed class UsageMonitor : IDisposable
     private readonly string _projectsDirectory;
     private readonly string _codexSessionsDirectory;
     private NotifyIcon? _trayIcon;
+    private readonly FirestoreSyncService _syncService;
+    private IReadOnlyList<UsageEvent> _remoteClaudeEvents = Array.Empty<UsageEvent>();
+    private IReadOnlyList<CodexUsageEvent> _remoteCodexEvents = Array.Empty<CodexUsageEvent>();
+
+    public bool IsDeviceSyncAvailable => _syncService.IsAvailable;
+    public string? SyncPairingCode => _syncService.PairingCode;
 
     public UsageMonitor()
     {
@@ -65,6 +73,9 @@ public sealed class UsageMonitor : IDisposable
 
         Directory.CreateDirectory(_projectsDirectory);
         Directory.CreateDirectory(_codexSessionsDirectory);
+
+        _syncService = new FirestoreSyncService();
+        _syncService.RemoteDataChanged += OnRemoteDataChanged;
 
         Refresh();
         RestartFallbackTimer();
@@ -117,9 +128,35 @@ public sealed class UsageMonitor : IDisposable
 
     public void Refresh()
     {
-        RefreshClaude();
-        RefreshCodex();
-        CheckUsageAlerts();
+        UsageEvent[] localClaude;
+        CodexUsageEvent[] localCodex;
+        lock (_refreshLock)
+        {
+            RefreshClaude();
+            RefreshCodex();
+            CheckUsageAlerts();
+            localClaude = _allEvents.ToArray();
+            localCodex = _allCodexEvents.ToArray();
+        }
+        SnapshotUpdated?.Invoke(this, EventArgs.Empty);
+        _syncService.UpdateLocalEvents(localClaude, localCodex);
+    }
+
+    public string CreateSyncPairingCode() => _syncService.CreatePairingCode();
+
+    public bool SetSyncPairingCode(string? code) => _syncService.SetPairingCode(code);
+
+    public Task<bool> SyncNowAsync() => _syncService.SyncLatestAsync();
+
+    private void OnRemoteDataChanged(object? sender, RemoteUsageData data)
+    {
+        lock (_refreshLock)
+        {
+            _remoteClaudeEvents = data.ClaudeEvents;
+            _remoteCodexEvents = data.CodexEvents;
+            ComputeClaudeSnapshot();
+            ComputeCodexSnapshot();
+        }
         SnapshotUpdated?.Invoke(this, EventArgs.Empty);
     }
 
@@ -229,13 +266,17 @@ public sealed class UsageMonitor : IDisposable
 
         if (newEvents.Count > 0) _allEvents.AddRange(newEvents);
 
+        ComputeClaudeSnapshot();
+    }
+
+    private void ComputeClaudeSnapshot()
+    {
         var settings = AppSettings.Shared;
         var manualTarget = settings.GetDouble("manualBlockTokenTarget");
         var colorHex = settings.GetString("gaugeColorHex") ?? GaugeAppearance.Default.ColorHex;
         var useGradient = settings.HasKey("gaugeUseGradient") ? settings.GetBool("gaugeUseGradient", true) : GaugeAppearance.Default.UseGradient;
         var style = GaugeDisplayStyleExtensions.FromStorageValue(settings.GetString("gaugeStyle"));
-
-        Snapshot = SnapshotComputer.ComputeSnapshot(_allEvents, manualTarget, new GaugeAppearance { ColorHex = colorHex, UseGradient = useGradient, Style = style });
+        Snapshot = SnapshotComputer.ComputeSnapshot(_allEvents.Concat(_remoteClaudeEvents).ToArray(), manualTarget, new GaugeAppearance { ColorHex = colorHex, UseGradient = useGradient, Style = style });
     }
 
     private void RefreshCodex()
@@ -270,8 +311,13 @@ public sealed class UsageMonitor : IDisposable
 
         if (newEvents.Count > 0) _allCodexEvents.AddRange(newEvents);
 
+        ComputeCodexSnapshot();
+    }
+
+    private void ComputeCodexSnapshot()
+    {
         var colorHex = AppSettings.Shared.GetString("codexColorHex") ?? Models.CodexSnapshot.Empty.ColorHex;
-        CodexSnapshot = SnapshotComputer.ComputeCodexSnapshot(_allCodexEvents, _latestCodexPrimaryWindow, _latestCodexSecondaryWindow, colorHex);
+        CodexSnapshot = SnapshotComputer.ComputeCodexSnapshot(_allCodexEvents.Concat(_remoteCodexEvents).ToArray(), _latestCodexPrimaryWindow, _latestCodexSecondaryWindow, colorHex);
     }
 
     private static List<string> FindLogFiles(string directory)
@@ -293,5 +339,7 @@ public sealed class UsageMonitor : IDisposable
         _debounceTimer?.Dispose();
         _claudeWatcher?.Dispose();
         _codexWatcher?.Dispose();
+        _syncService.RemoteDataChanged -= OnRemoteDataChanged;
+        _syncService.Dispose();
     }
 }

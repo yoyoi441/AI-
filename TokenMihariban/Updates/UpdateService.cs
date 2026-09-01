@@ -3,12 +3,13 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace TokenMihariban.Updates;
 
-internal sealed record AppRelease(Version Version, string Tag, string PageUrl, string? InstallerUrl, string Notes);
+internal sealed record AppRelease(Version Version, string Tag, string PageUrl, string? InstallerUrl, string? Sha256, string Notes);
 
 internal static class UpdateService
 {
@@ -41,16 +42,22 @@ internal static class UpdateService
         var pageUrl = root.GetProperty("html_url").GetString() ?? "https://github.com/yoyoi441/AI-/releases";
         var notes = root.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "";
         string? installerUrl = null;
+        string? sha256 = null;
         if (root.TryGetProperty("assets", out var assets))
         {
             foreach (var asset in assets.EnumerateArray())
             {
                 if (!string.Equals(asset.GetProperty("name").GetString(), ExpectedAssetName, StringComparison.OrdinalIgnoreCase)) continue;
                 installerUrl = asset.GetProperty("browser_download_url").GetString();
+                if (asset.TryGetProperty("digest", out var digestElement))
+                {
+                    var digest = digestElement.GetString();
+                    if (digest?.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) == true) sha256 = digest[7..];
+                }
                 break;
             }
         }
-        return new AppRelease(version, tag, pageUrl, installerUrl, notes);
+        return new AppRelease(version, tag, pageUrl, installerUrl, sha256, notes);
     }
 
     public static async Task<string> DownloadInstallerAsync(AppRelease release)
@@ -70,6 +77,18 @@ internal static class UpdateService
         await using var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
         await using var output = File.Create(destination);
         await input.CopyToAsync(output).ConfigureAwait(false);
+        await output.FlushAsync().ConfigureAwait(false);
+        output.Close();
+        if (release.Sha256 is { Length: > 0 })
+        {
+            await using var verifyStream = File.OpenRead(destination);
+            var actual = Convert.ToHexString(await SHA256.HashDataAsync(verifyStream).ConfigureAwait(false)).ToLowerInvariant();
+            if (!actual.Equals(release.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(destination);
+                throw new InvalidOperationException("Downloaded installer checksum did not match the GitHub release.");
+            }
+        }
         return destination;
     }
 

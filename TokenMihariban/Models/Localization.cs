@@ -50,6 +50,7 @@ public static class L
         ["appearanceTab"] = ("見た目", "Appearance"),
         ["displayItemsTab"] = ("表示項目", "Display Items"),
         ["tokenTargetTab"] = ("トークン目安", "Token Target"),
+        ["deviceSyncTab"] = ("端末間同期", "Device Sync"),
         ["exportTab"] = ("エクスポート", "Export"),
 
         // Export tab
@@ -68,6 +69,7 @@ public static class L
         ["launchHeader"] = ("起動", "Launch"),
         ["rescanIntervalFormat"] = ("念のための再スキャン間隔: {0}秒", "Fallback rescan interval: {0}s"),
         ["rescanNote"] = ("ログの更新は基本的にファイル変更の監視で即時反映されます。これは取りこぼし時の保険としての再スキャン間隔です。", "Log updates normally show up instantly via file-change watching. This interval is just a safety net in case an update is missed."),
+        ["rescanHeader"] = ("データの再読み込み", "Data Refresh"),
         ["updatesHeader"] = ("更新", "Updates"),
         ["currentVersionFormat"] = ("現在のバージョン: {0}", "Current version: {0}"),
         ["checkForUpdates"] = ("更新を確認", "Check for Updates"),
@@ -80,6 +82,27 @@ public static class L
         ["updateRestartNote"] = ("更新ファイルを起動すると、このアプリを終了します。更新後に再度起動してください。", "The app will close after launching the updater. Start it again after installation."),
         ["languageHeader"] = ("言語", "Language"),
         ["languagePickerLabel"] = ("表示言語", "Display Language"),
+
+        // Device sync
+        ["deviceSyncHeader"] = ("別端末と使用量を同期", "Sync Usage with Other Devices"),
+        ["syncUnavailable"] = ("このビルドでは端末間同期を利用できません。", "Device sync is unavailable in this build."),
+        ["syncUnavailableNote"] = ("Firebase設定を含む公式リリース版を使用してください。ローカルの使用量表示は引き続き利用できます。", "Use an official release that includes Firebase configuration. Local usage monitoring still works."),
+        ["copy"] = ("コピー", "Copy"),
+        ["copied"] = ("コピーしました", "Copied"),
+        ["pairingCodeNoteWindows"] = ("このコードをMac版または別のWindows版の「端末間同期」に入力すると、各端末の使用量が合算表示されます。", "Enter this code in Device Sync on a Mac or another Windows PC to combine usage."),
+        ["syncNow"] = ("今すぐ同期", "Sync Now"),
+        ["syncing"] = ("同期しています…", "Syncing…"),
+        ["syncComplete"] = ("同期処理が完了しました。", "Sync completed."),
+        ["syncFailed"] = ("同期できませんでした。通信状態を確認して、もう一度お試しください。", "Sync failed. Check your connection and try again."),
+        ["unpairWindows"] = ("このPCの同期を解除", "Unpair This PC"),
+        ["createNewCode"] = ("新しいペアリングコードを作成", "Create a New Pairing Code"),
+        ["createNewCodeNote"] = ("最初の端末ではこちらを選び、表示されたコードをもう一方の端末へ入力してください。", "Choose this on the first device, then enter the displayed code on your other device."),
+        ["joinExistingHeader"] = ("既存のコードで参加する", "Join an Existing Group"),
+        ["connect"] = ("接続", "Connect"),
+        ["invalidPairingCode"] = ("8文字のペアリングコードを入力してください。", "Enter the eight-character pairing code."),
+        ["enterCodeNoteWindows"] = ("別のMacまたはWindows版に表示されている8文字のコードを入力します。", "Enter the eight-character code shown on another Mac or Windows PC."),
+        ["syncPrivacyHeader"] = ("同期されるデータ", "Data That Is Synced"),
+        ["syncPrivacyNote"] = ("同期を有効にした場合のみ、直近9日分のトークン使用イベント（日時、モデル、トークン数、セッションID、プロジェクトパス）がFirebaseへ送信されます。Anthropic・OpenAIのログイン情報やAPIキーは送信しません。", "Only after you enable sync, the last nine days of token usage events (time, model, token counts, session ID, and project path) are sent to Firebase. Anthropic/OpenAI credentials and API keys are never uploaded."),
 
         // Appearance tab
         ["displayStyle"] = ("表示スタイル", "Display Style"),

@@ -1,0 +1,415 @@
+import Foundation
+import Combine
+import WidgetKit
+import FirebaseFirestore
+import ClaudeUsageCore
+import ClaudeUsageSync
+
+/// Watches both Claude Code's (`~/.claude/projects`) and Codex CLI's (`~/.codex/sessions`)
+/// local logs for new usage events, recomputes both snapshots, and publishes them to the
+/// menu bar UI and (via SnapshotStore + the App Group container) the widget extension.
+///
+/// The two providers are kept as separate pipelines throughout, not merged into one
+/// model: Claude's block/limit numbers are heuristic estimates (see
+/// `SessionBlockCalculator`), while Codex's come straight from OpenAI's own rate-limit
+/// reporting (`payload.rate_limits` in its rollout logs) — conflating the two would
+/// make the accurate one look as uncertain as the guessed one.
+///
+/// Updates are event-driven via `FileSystemWatcher` (near-instant: a refresh fires
+/// within about a second of either tool writing new data). `refreshIntervalSeconds`
+/// only controls a periodic fallback re-scan, in case a filesystem event is missed.
+///
+/// File offsets are tracked in memory only, for this process's lifetime: a fresh
+/// launch always re-parses full history once (offsets start at 0), and only new
+/// lines are re-parsed on each subsequent refresh while the app keeps running.
+///
+/// If this device is paired to a sync group (`SyncPairing.syncId`) and Firebase is
+/// configured (`FirestoreSync.isAvailable`), newly-parsed events are also uploaded to
+/// Firestore, and events other devices in the group uploaded are downloaded and folded
+/// into the same computation — so the displayed totals/reset time reflect *all* paired
+/// devices, not just this one. See `FirestoreSync.swift` for why.
+@MainActor
+final class UsageMonitor: ObservableObject {
+    @Published private(set) var snapshot: UsageSnapshot = SnapshotStore.readSnapshot() ?? .empty
+    @Published private(set) var codexSnapshot: CodexSnapshot = SnapshotStore.readCodexSnapshot() ?? .empty
+    @Published var refreshIntervalSeconds: Double = 60 {
+        didSet { restartFallbackTimer() }
+    }
+
+    private var fallbackTimer: Timer?
+    private var watcher: FileSystemWatcher?
+    private var codexWatcher: FileSystemWatcher?
+
+    private var allEvents: [UsageEvent] = []
+    private var fileOffsets: [String: UInt64] = [:]
+
+    private var allCodexEvents: [CodexUsageEvent] = []
+    private var codexFileOffsets: [String: UInt64] = [:]
+    // Retained across refreshes: a batch of newly-appended lines won't necessarily
+    // include a fresh rate_limits payload, so the last known one carries forward.
+    // Rollout files aren't visited in chronological order, so a reading only replaces
+    // the current one if its own event timestamp is actually newer.
+    private var latestCodexPrimaryWindow: CodexRateLimitWindow?
+    private var latestCodexSecondaryWindow: CodexRateLimitWindow?
+    private var latestCodexWindowEventTimestamp: Date?
+
+    // Events other devices in the same sync group have uploaded (never includes this
+    // device's own events — those are already in allEvents/allCodexEvents from the local
+    // parse). Combined with the local pool at compute time so every device shows the
+    // same account-wide total.
+    private var remoteClaudeEvents: [UsageEvent] = []
+    private var remoteCodexEvents: [CodexUsageEvent] = []
+    private var claudeListener: ListenerRegistration?
+    private var codexEventsListener: ListenerRegistration?
+    private var codexRateLimitsListener: ListenerRegistration?
+
+    private let projectsDirectory: URL
+    private let codexSessionsDirectory: URL
+    private let deviceId = SyncPairing.deviceId
+
+    init() {
+        projectsDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects", isDirectory: true)
+        codexSessionsDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions", isDirectory: true)
+
+        FirestoreSync.configureIfNeeded()
+
+        let notificationsEnabled = UserDefaults.standard.object(forKey: "notificationsEnabled") == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: "notificationsEnabled")
+        if notificationsEnabled {
+            UsageNotifier.requestAuthorizationIfNeeded()
+        }
+
+        refresh()
+        restartFallbackTimer()
+        watcher = FileSystemWatcher(rootDirectory: projectsDirectory) { [weak self] in
+            Task { @MainActor in self?.scheduleDebouncedRefresh() }
+        }
+        codexWatcher = FileSystemWatcher(rootDirectory: codexSessionsDirectory) { [weak self] in
+            Task { @MainActor in self?.scheduleDebouncedRefresh() }
+        }
+        startCloudSyncIfPaired()
+    }
+
+    private var refreshDebounceWorkItem: DispatchWorkItem?
+
+    /// Claude Code (and Codex) can append to their log files many times per second while
+    /// actively streaming a response — each write fires a separate `FileSystemWatcher`
+    /// event. Without coalescing, every one of those would trigger a full `refresh()`,
+    /// which re-sorts and re-aggregates the *entire* event history (see
+    /// `SessionBlockCalculator.computeBlocks`); back-to-back full recomputes during an
+    /// active session were observed driving the app's memory well past what a menu bar
+    /// utility should ever need. Collapsing a burst of writes into a single refresh,
+    /// fired once activity has been quiet for a moment, keeps the recompute rate sane
+    /// without meaningfully delaying when new usage shows up on screen.
+    private func scheduleDebouncedRefresh() {
+        refreshDebounceWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor in self?.refresh() }
+        }
+        refreshDebounceWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
+    }
+
+    /// Raw per-event rows for the Settings export tab, covering full history (not just
+    /// what's shown in the UI, which only ever surfaces today/7-day rollups) across
+    /// every paired device — same `local + remote` combination the on-screen totals use,
+    /// so the export matches what the app displays rather than just this Mac's share of
+    /// it. `allEvents`/`allCodexEvents` never drop old entries once parsed, so any past
+    /// date range is available without re-reading log files.
+    func exportRows(from start: Date, to end: Date) -> [UsageExportRow] {
+        UsageExporter.rows(
+            claudeEvents: allEvents + remoteClaudeEvents,
+            codexEvents: allCodexEvents + remoteCodexEvents,
+            from: start,
+            to: end
+        )
+    }
+
+    /// Call after the user sets up or enters a pairing code in Settings, so listeners
+    /// start without needing to relaunch the app.
+    func syncPairingChanged() {
+        claudeListener?.remove()
+        codexEventsListener?.remove()
+        codexRateLimitsListener?.remove()
+        remoteClaudeEvents = []
+        remoteCodexEvents = []
+        startCloudSyncIfPaired()
+        refresh()
+    }
+
+    private func startCloudSyncIfPaired() {
+        guard FirestoreSync.isAvailable, let syncId = SyncPairing.syncId else { return }
+
+        claudeListener = FirestoreSync.observeClaudeEvents(syncId: syncId, excludingDeviceId: deviceId) { [weak self] events in
+            Task { @MainActor in
+                self?.remoteClaudeEvents = events
+                self?.refreshClaude()
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+        }
+        codexEventsListener = FirestoreSync.observeCodexEvents(syncId: syncId, excludingDeviceId: deviceId) { [weak self] events in
+            Task { @MainActor in
+                self?.remoteCodexEvents = events
+                self?.refreshCodex()
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+        }
+        codexRateLimitsListener = FirestoreSync.observeCodexRateLimits(syncId: syncId) { [weak self] primary, secondary, eventTimestamp in
+            Task { @MainActor in
+                guard let self, let eventTimestamp else { return }
+                if self.latestCodexWindowEventTimestamp == nil || eventTimestamp > self.latestCodexWindowEventTimestamp! {
+                    self.latestCodexWindowEventTimestamp = eventTimestamp
+                    self.latestCodexPrimaryWindow = primary
+                    self.latestCodexSecondaryWindow = secondary
+                    self.refreshCodex()
+                    WidgetCenter.shared.reloadAllTimelines()
+                }
+            }
+        }
+
+        // So a freshly-paired device sees this Mac's current look-and-feel right away,
+        // not only after the next time a setting happens to change.
+        pushAppearanceSettingsIfPaired()
+    }
+
+    /// Mac is treated as the source of truth for appearance/display-item settings:
+    /// it always shares its current values (regardless of any "sync with Mac" toggle,
+    /// which only exists on the receiving/mirroring side, e.g. iPhone).
+    func pushAppearanceSettingsIfPaired() {
+        guard FirestoreSync.isAvailable, let syncId = SyncPairing.syncId else { return }
+        let defaults = UserDefaults.standard
+        func flag(_ key: String, default defaultValue: Bool) -> Bool {
+            defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
+        }
+        let doc = FirestoreSync.AppearanceSettingsDocument(
+            gaugeColorHex: defaults.string(forKey: "gaugeColorHex") ?? GaugeAppearance.default.colorHex,
+            codexColorHex: defaults.string(forKey: "codexColorHex") ?? CodexSnapshot.empty.colorHex,
+            gaugeUseGradient: flag("gaugeUseGradient", default: GaugeAppearance.default.useGradient),
+            gaugeStyle: defaults.string(forKey: "gaugeStyle") ?? GaugeAppearance.default.style.rawValue,
+            showClaudeProvider: flag("showClaudeProvider", default: true),
+            showCodexProvider: flag("showCodexProvider", default: true),
+            showTimeGauge: flag("showTimeGauge", default: true),
+            showTokenGauge: flag("showTokenGauge", default: true),
+            showTodaySummary: flag("showTodaySummary", default: true),
+            showEstimatedCost: flag("showEstimatedCost", default: false),
+            showModelBreakdown: flag("showModelBreakdown", default: true),
+            showProjectBreakdown: flag("showProjectBreakdown", default: true),
+            showHourlyChart: flag("showHourlyChart", default: true),
+            showLast7Days: flag("showLast7Days", default: true)
+        )
+        FirestoreSync.uploadAppearanceSettings(doc, syncId: syncId)
+    }
+
+    func restartFallbackTimer() {
+        fallbackTimer?.invalidate()
+        fallbackTimer = Timer.scheduledTimer(withTimeInterval: refreshIntervalSeconds, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+    }
+
+    func refresh() {
+        refreshClaude()
+        refreshCodex()
+        checkUsageAlerts()
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// Fires a local notification (once per day, per provider, per gauge type) when a
+    /// user-set daily or custom-window token target is exceeded. Targets default to 0
+    /// (disabled) so this is a no-op until the user sets one in Settings.
+    private func checkUsageAlerts() {
+        let defaults = UserDefaults.standard
+        let notificationsEnabled = defaults.object(forKey: "notificationsEnabled") == nil
+            ? true
+            : defaults.bool(forKey: "notificationsEnabled")
+        guard notificationsEnabled else { return }
+
+        let window = DailyTimeWindow(
+            startMinute: defaults.object(forKey: "customWindowStartMinute") as? Int ?? DailyTimeWindow.default.startMinute,
+            endMinute: defaults.object(forKey: "customWindowEndMinute") as? Int ?? DailyTimeWindow.default.endMinute
+        )
+        let lang = AppLanguagePreference.resolve(from: defaults.string(forKey: AppLanguagePreference.storageKey))
+        let dateKey = todayDateKey()
+
+        if defaults.bool(forKey: "dailyTargetEnabled") {
+            checkTarget(current: snapshot.todayTotalTokens, target: defaults.double(forKey: "claudeDailyTokenTarget"), providerName: "Claude Code", kind: "daily", dateKey: dateKey, lang: lang)
+            checkTarget(current: codexSnapshot.todayTotalTokens, target: defaults.double(forKey: "codexDailyTokenTarget"), providerName: "Codex", kind: "daily", dateKey: dateKey, lang: lang)
+        }
+        if defaults.bool(forKey: "windowTargetEnabled") {
+            checkTarget(current: snapshot.hourlyTokensToday.tokensInWindow(window), target: defaults.double(forKey: "claudeWindowTokenTarget"), providerName: "Claude Code", kind: "window", dateKey: dateKey, lang: lang)
+            checkTarget(current: codexSnapshot.hourlyTokensToday.tokensInWindow(window), target: defaults.double(forKey: "codexWindowTokenTarget"), providerName: "Codex", kind: "window", dateKey: dateKey, lang: lang)
+        }
+        if let block = snapshot.currentBlock, let target = snapshot.referenceTokens {
+            checkBlockPaceAlert(block: block, target: target, lang: lang)
+        }
+    }
+
+    private func checkTarget(current: Int, target: Double, providerName: String, kind: String, dateKey: String, lang: AppLanguage) {
+        guard target > 0, Double(current) > target else { return }
+        UsageNotifier.notifyOnce(
+            dedupeKey: "mac_\(kind)_\(providerName)_\(dateKey)",
+            title: L.string("notificationExceededTitleFormat", lang: lang, args: [providerName]),
+            body: L.string("notificationExceededBodyFormat", lang: lang, args: [providerName, formattedNumber(current), formattedNumber(Int(target))])
+        )
+    }
+
+    /// One-time-per-block heads-up: at the current block's observed pace, its token
+    /// target will be reached soon (see `PaceAlertEvaluator.warnWithinMinutes`) — unlike
+    /// `checkTarget`, which only fires after a target is already exceeded, this is meant
+    /// to give the user time to react before that happens.
+    private func checkBlockPaceAlert(block: SessionBlockSummary, target: Int, lang: AppLanguage) {
+        guard let minutesUntil = PaceAlertEvaluator.minutesUntilTargetReached(block: block, target: target),
+              minutesUntil <= PaceAlertEvaluator.warnWithinMinutes else { return }
+        UsageNotifier.notifyOnce(
+            dedupeKey: "mac_pace_claude_\(Int(block.start.timeIntervalSince1970))",
+            title: L.string("notificationPaceWarningTitleFormat", lang: lang, args: ["Claude Code"]),
+            body: L.string("notificationPaceWarningBodyFormat", lang: lang, args: [Int(minutesUntil.rounded()), formattedNumber(target)])
+        )
+    }
+
+    private func todayDateKey() -> String {
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        return "\(c.year ?? 0)-\(c.month ?? 0)-\(c.day ?? 0)"
+    }
+
+    private func formattedNumber(_ count: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+    }
+
+    private func refreshClaude() {
+        var newEvents: [UsageEvent] = []
+
+        for url in findLogFiles(in: projectsDirectory, extension: "jsonl") {
+            let key = url.path
+            let offset = fileOffsets[key] ?? 0
+            guard let result = try? JSONLParser.parseFile(at: url, fromByteOffset: offset) else { continue }
+            fileOffsets[key] = result.newOffset
+            newEvents.append(contentsOf: result.events)
+        }
+
+        if !newEvents.isEmpty {
+            allEvents.append(contentsOf: newEvents)
+        }
+        // Checked every refresh (not just when newEvents is non-empty) against the full
+        // local pool, not just this cycle's increment: the per-syncId watermark is the
+        // only thing that decides what's already uploaded, so switching pairing codes
+        // (a fresh watermark) correctly re-uploads full history without needing a relaunch.
+        uploadNewEventsToCloud(allEvents, watermarkKeyPrefix: "lastUploadedClaudeEventAt", timestamp: \.timestamp) { events, syncId, deviceId in
+            FirestoreSync.uploadClaudeEvents(events, syncId: syncId, deviceId: deviceId)
+        }
+
+        let defaults = UserDefaults.standard
+        let manualTarget = defaults.double(forKey: "manualBlockTokenTarget")
+        let colorHex = defaults.string(forKey: "gaugeColorHex") ?? GaugeAppearance.default.colorHex
+        // Bool defaults to false when unset; treat "never set" as the gradient default (on).
+        let useGradient = defaults.object(forKey: "gaugeUseGradient") == nil
+            ? GaugeAppearance.default.useGradient
+            : defaults.bool(forKey: "gaugeUseGradient")
+        let style = defaults.string(forKey: "gaugeStyle").flatMap(GaugeDisplayStyle.init(rawValue:)) ?? GaugeAppearance.default.style
+
+        let computed = SnapshotComputer.computeSnapshot(
+            from: allEvents + remoteClaudeEvents,
+            manualBlockTokenTarget: manualTarget,
+            appearance: GaugeAppearance(colorHex: colorHex, useGradient: useGradient, style: style)
+        )
+        snapshot = computed
+        try? SnapshotStore.writeSnapshot(computed)
+        // Widget process reads this from the App Group container (see SnapshotStore) —
+        // there's no UserDefaults suite shared between app and extension here.
+        try? SnapshotStore.writeLanguage(AppLanguagePreference.resolve(from: defaults.string(forKey: AppLanguagePreference.storageKey)))
+    }
+
+    /// Uploads only events newer than the last successful upload (persisted across
+    /// restarts), so a fresh launch's full-history reparse doesn't re-upload years of
+    /// events to Firestore every time the app starts. The watermark is namespaced by
+    /// sync ID: switching to a different (or new) pairing code always starts with no
+    /// watermark for that code, so the full local pool re-uploads once instead of
+    /// silently appearing incomplete on other devices in the new group.
+    private func uploadNewEventsToCloud<Event>(
+        _ events: [Event],
+        watermarkKeyPrefix: String,
+        timestamp: (Event) -> Date,
+        upload: ([Event], String, String) -> Void
+    ) {
+        guard FirestoreSync.isAvailable, let syncId = SyncPairing.syncId else { return }
+        let watermarkKey = "\(watermarkKeyPrefix)_\(syncId)"
+        let watermark = UserDefaults.standard.object(forKey: watermarkKey) as? Double
+        let toUpload = watermark.map { mark in events.filter { timestamp($0).timeIntervalSince1970 > mark } } ?? events
+        guard !toUpload.isEmpty else { return }
+        upload(toUpload, syncId, deviceId)
+        if let newest = toUpload.map({ timestamp($0) }).max() {
+            UserDefaults.standard.set(newest.timeIntervalSince1970, forKey: watermarkKey)
+        }
+    }
+
+    private func refreshCodex() {
+        var newEvents: [CodexUsageEvent] = []
+
+        for url in findLogFiles(in: codexSessionsDirectory, extension: "jsonl") {
+            guard url.lastPathComponent.hasPrefix("rollout-") else { continue }
+            let key = url.path
+            let offset = codexFileOffsets[key] ?? 0
+            let sessionId = url.deletingPathExtension().lastPathComponent
+            guard let result = try? CodexJSONLParser.parseFile(at: url, sessionId: sessionId, fromByteOffset: offset) else { continue }
+            codexFileOffsets[key] = result.newOffset
+            newEvents.append(contentsOf: result.events)
+
+            if let eventTimestamp = result.latestWindowEventTimestamp,
+               latestCodexWindowEventTimestamp == nil || eventTimestamp > latestCodexWindowEventTimestamp! {
+                latestCodexWindowEventTimestamp = eventTimestamp
+                if let primary = result.latestPrimaryWindow { latestCodexPrimaryWindow = primary }
+                if let secondary = result.latestSecondaryWindow { latestCodexSecondaryWindow = secondary }
+            }
+        }
+
+        if !newEvents.isEmpty {
+            allCodexEvents.append(contentsOf: newEvents)
+        }
+        uploadNewEventsToCloud(allCodexEvents, watermarkKeyPrefix: "lastUploadedCodexEventAt", timestamp: \.timestamp) { events, syncId, deviceId in
+            FirestoreSync.uploadCodexEvents(events, syncId: syncId, deviceId: deviceId)
+        }
+
+        // Relay this device's freshest known rate-limit reading to the group on every
+        // refresh, not just when a new one was parsed this cycle — otherwise a device
+        // that already knew its latest reading before pairing (or before switching to
+        // a different pairing code) would never push it to a freshly-connected group.
+        // The Firestore side only overwrites if this is genuinely newer than what's
+        // already there, so redundant calls are harmless.
+        if FirestoreSync.isAvailable, let syncId = SyncPairing.syncId, let eventTimestamp = latestCodexWindowEventTimestamp {
+            FirestoreSync.uploadCodexRateLimitsIfNewer(
+                primary: latestCodexPrimaryWindow,
+                secondary: latestCodexSecondaryWindow,
+                eventTimestamp: eventTimestamp,
+                syncId: syncId,
+                deviceId: deviceId
+            )
+        }
+
+        let colorHex = UserDefaults.standard.string(forKey: "codexColorHex") ?? CodexSnapshot.empty.colorHex
+
+        let computed = SnapshotComputer.computeCodexSnapshot(
+            from: allCodexEvents + remoteCodexEvents,
+            primaryWindow: latestCodexPrimaryWindow,
+            secondaryWindow: latestCodexSecondaryWindow,
+            colorHex: colorHex
+        )
+        codexSnapshot = computed
+        try? SnapshotStore.writeCodexSnapshot(computed)
+    }
+
+    private func findLogFiles(in directory: URL, extension fileExtension: String) -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == fileExtension }
+    }
+
+}

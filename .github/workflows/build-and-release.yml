@@ -1,0 +1,143 @@
+name: Build Windows and macOS
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Add Firebase configuration
+        if: ${{ secrets.FIREBASE_PROJECT_ID != '' && secrets.FIREBASE_API_KEY != '' }}
+        shell: pwsh
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+        run: |
+          $config = @{ projectId = $env:FIREBASE_PROJECT_ID; apiKey = $env:FIREBASE_API_KEY } | ConvertTo-Json
+          Set-Content -Path "TokenMihariban/firebase.config.json" -Value $config -Encoding UTF8
+
+      - name: Restore
+        run: dotnet restore TokenMihariban.sln
+
+      - name: Build
+        run: dotnet build TokenMihariban.sln --configuration Release --no-restore
+
+      - name: Publish self-contained app
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME -match '^v(.+)$') { $Matches[1] } else { '0.2.0' }
+          dotnet publish TokenMihariban/TokenMihariban.csproj --configuration Release -p:PublishProfile=win-x64 -p:Version=$version
+
+      - name: Upload portable app
+        uses: actions/upload-artifact@v4
+        with:
+          name: TokenMihariban-windows-x64
+          path: TokenMihariban/bin/Release/net8.0-windows/win-x64/publish/
+
+      - name: Install Inno Setup
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "installer\TokenMihariban.iss"
+
+      - name: Upload installer
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: installer/Output/TokenMiharibanSetup.exe
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Firebase configuration
+        shell: bash
+        env:
+          FIREBASE_PLIST_B64: ${{ secrets.FIREBASE_GOOGLE_SERVICE_INFO_B64 }}
+        run: |
+          if [[ -n "$FIREBASE_PLIST_B64" ]]; then
+            printf '%s' "$FIREBASE_PLIST_B64" | base64 -D > macOS/TokenMihariban/GoogleService-Info.plist
+          else
+            plutil -create xml1 macOS/TokenMihariban/GoogleService-Info.plist
+            plutil -insert API_KEY -string disabled macOS/TokenMihariban/GoogleService-Info.plist
+            plutil -insert PROJECT_ID -string disabled macOS/TokenMihariban/GoogleService-Info.plist
+            plutil -insert GOOGLE_APP_ID -string disabled macOS/TokenMihariban/GoogleService-Info.plist
+          fi
+          plutil -replace BUNDLE_ID -string com.yoyoi441.TokenMihariban macOS/TokenMihariban/GoogleService-Info.plist 2>/dev/null || \
+            plutil -insert BUNDLE_ID -string com.yoyoi441.TokenMihariban macOS/TokenMihariban/GoogleService-Info.plist
+
+      - name: Build universal macOS app
+        shell: bash
+        run: |
+          version="0.2.0"
+          if [[ "$GITHUB_REF_NAME" =~ ^v(.+)$ ]]; then version="${BASH_REMATCH[1]}"; fi
+          xcodebuild \
+            -project macOS/TokenMihariban.xcodeproj \
+            -scheme TokenMihariban \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION="$version" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            build
+
+      - name: Ad-hoc sign and package
+        shell: bash
+        run: |
+          app="$RUNNER_TEMP/DerivedData/Build/Products/Release/TokenMihariban.app"
+          codesign --force --deep --sign - "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/TokenMihariban-macOS.zip"
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: ${{ runner.temp }}/TokenMihariban-macOS.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-app
+          path: release
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release/TokenMiharibanSetup.exe \
+            release/TokenMihariban-macOS.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --generate-notes \
+            --title "$GITHUB_REF_NAME"
