@@ -22,14 +22,15 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Add Firebase configuration
-        if: ${{ secrets.FIREBASE_PROJECT_ID != '' && secrets.FIREBASE_API_KEY != '' }}
         shell: pwsh
         env:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
         run: |
-          $config = @{ projectId = $env:FIREBASE_PROJECT_ID; apiKey = $env:FIREBASE_API_KEY } | ConvertTo-Json
-          Set-Content -Path "TokenMihariban/firebase.config.json" -Value $config -Encoding UTF8
+          if (-not [string]::IsNullOrWhiteSpace($env:FIREBASE_PROJECT_ID) -and -not [string]::IsNullOrWhiteSpace($env:FIREBASE_API_KEY)) {
+            $config = @{ projectId = $env:FIREBASE_PROJECT_ID; apiKey = $env:FIREBASE_API_KEY } | ConvertTo-Json
+            Set-Content -Path "TokenMihariban/firebase.config.json" -Value $config -Encoding UTF8
+          }
 
       - name: Restore
         run: dotnet restore TokenMihariban.sln
