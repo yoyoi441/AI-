@@ -142,9 +142,11 @@ public sealed class UsageMonitor : IDisposable
         _syncService.UpdateLocalEvents(localClaude, localCodex);
     }
 
-    public string CreateSyncPairingCode() => _syncService.CreatePairingCode();
+    public Task<string?> CreateSyncPairingCodeAsync() => _syncService.CreatePairingCodeAsync();
 
-    public bool SetSyncPairingCode(string? code) => _syncService.SetPairingCode(code);
+    public Task<bool> JoinSyncPairingCodeAsync(string? code) => _syncService.JoinPairingCodeAsync(code);
+
+    public Task UnpairSyncAsync() => _syncService.UnpairAsync();
 
     public Task<bool> SyncNowAsync() => _syncService.SyncLatestAsync();
 

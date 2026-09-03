@@ -1,0 +1,157 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function memberPath(groupId) {
+      return /databases/$(database)/documents/syncGroups/$(groupId)/members/$(request.auth.uid);
+    }
+
+    function groupPath(groupId) {
+      return /databases/$(database)/documents/syncGroups/$(groupId);
+    }
+
+    function isMember(groupId) {
+      return signedIn() && exists(memberPath(groupId));
+    }
+
+    function validGroupAfter(groupId) {
+      return signedIn()
+        && existsAfter(groupPath(groupId))
+        && getAfter(groupPath(groupId)).data.schemaVersion == 2;
+    }
+
+    function memberDeviceId(groupId) {
+      return get(memberPath(groupId)).data.deviceId;
+    }
+
+    function validMember() {
+      return request.resource.data.keys().hasOnly(['deviceId', 'platform', 'joinedAt'])
+        && request.resource.data.deviceId is string
+        && request.resource.data.deviceId.size() >= 16
+        && request.resource.data.deviceId.size() <= 64
+        && request.resource.data.platform in ['windows', 'macos']
+        && request.resource.data.joinedAt is timestamp
+        && request.resource.data.joinedAt <= request.time + duration.value(5, 'm');
+    }
+
+    function validCommonEvent(groupId, data) {
+      return data.keys().hasOnly(['deviceId', 'event'])
+        && data.deviceId == memberDeviceId(groupId)
+        && data.event.timestamp is timestamp
+        && data.event.timestamp >= request.time - duration.value(10, 'd')
+        && data.event.timestamp <= request.time + duration.value(5, 'm')
+        && data.event.model is string
+        && data.event.model.size() <= 200
+        && data.event.sessionId is string
+        && data.event.sessionId.size() <= 512
+        && data.event.projectPath is string
+        && data.event.projectPath.size() <= 2048;
+    }
+
+    function validTokenCount(value) {
+      return value is int && value >= 0 && value <= 1000000000000;
+    }
+
+    function validClaudeEvent(groupId) {
+      let event = request.resource.data.event;
+      return validCommonEvent(groupId, request.resource.data)
+        && event.keys().hasOnly([
+          'timestamp', 'model', 'inputTokens', 'outputTokens',
+          'cacheCreationTokens', 'cacheReadTokens', 'sessionId', 'projectPath'
+        ])
+        && validTokenCount(event.inputTokens)
+        && validTokenCount(event.outputTokens)
+        && validTokenCount(event.cacheCreationTokens)
+        && validTokenCount(event.cacheReadTokens);
+    }
+
+    function validCodexEvent(groupId) {
+      let event = request.resource.data.event;
+      return validCommonEvent(groupId, request.resource.data)
+        && event.keys().hasOnly([
+          'timestamp', 'model', 'inputTokens', 'cachedInputTokens',
+          'outputTokens', 'reasoningOutputTokens', 'sessionId', 'projectPath'
+        ])
+        && validTokenCount(event.inputTokens)
+        && validTokenCount(event.cachedInputTokens)
+        && validTokenCount(event.outputTokens)
+        && validTokenCount(event.reasoningOutputTokens);
+    }
+
+    match /syncGroups/{groupId} {
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['ownerUid', 'createdAt', 'schemaVersion'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.createdAt <= request.time + duration.value(5, 'm')
+        && request.resource.data.schemaVersion == 2;
+      allow get: if isMember(groupId);
+      allow list, update, delete: if false;
+
+      match /members/{memberUid} {
+        allow read: if isMember(groupId);
+        allow create, update: if signedIn()
+          && memberUid == request.auth.uid
+          && validGroupAfter(groupId)
+          && validMember();
+        allow delete: if signedIn() && memberUid == request.auth.uid;
+      }
+
+      match /claudeEvents/{eventId} {
+        allow read: if isMember(groupId);
+        allow create, update: if isMember(groupId) && validClaudeEvent(groupId);
+        allow delete: if isMember(groupId) && resource.data.deviceId == memberDeviceId(groupId);
+      }
+
+      match /codexEvents/{eventId} {
+        allow read: if isMember(groupId);
+        allow create, update: if isMember(groupId) && validCodexEvent(groupId);
+        allow delete: if isMember(groupId) && resource.data.deviceId == memberDeviceId(groupId);
+      }
+
+      match /codexRateLimits/{documentId} {
+        allow read: if isMember(groupId);
+        allow create, update: if isMember(groupId)
+          && request.resource.data.deviceId == memberDeviceId(groupId)
+          && request.resource.data.eventTimestamp is timestamp;
+        allow delete: if false;
+      }
+
+      match /settings/{documentId} {
+        allow read: if isMember(groupId);
+        allow create, update: if isMember(groupId)
+          && request.resource.data.keys().hasOnly([
+            'gaugeColorHex', 'codexColorHex', 'gaugeUseGradient', 'gaugeStyle',
+            'showClaudeProvider', 'showCodexProvider', 'showTimeGauge',
+            'showTokenGauge', 'showTodaySummary', 'showEstimatedCost',
+            'showModelBreakdown', 'showProjectBreakdown', 'showHourlyChart',
+            'showLast7Days'
+          ]);
+        allow delete: if false;
+      }
+
+      match /notifications/{notificationId} {
+        allow read: if isMember(groupId);
+        allow create: if isMember(groupId)
+          && request.resource.data.keys().hasOnly(['sourceDeviceId', 'title', 'body', 'createdAt'])
+          && request.resource.data.sourceDeviceId == memberDeviceId(groupId)
+          && request.resource.data.title is string
+          && request.resource.data.title.size() <= 200
+          && request.resource.data.body is string
+          && request.resource.data.body.size() <= 2000
+          && request.resource.data.createdAt is timestamp
+          && request.resource.data.createdAt >= request.time - duration.value(5, 'm')
+          && request.resource.data.createdAt <= request.time + duration.value(5, 'm');
+        allow update, delete: if false;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

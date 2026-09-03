@@ -172,12 +172,15 @@ public enum L {
         "createNewCode": ("新しいペアリングコードを作成", "Create a new pairing code"),
         "createNewCodeNote": ("最初の端末ではこちらを選んでください。表示されたコードを他の端末に入力してもらいます。", "Choose this on your first device. Enter the code it shows on your other devices."),
         "startNewHeader": ("新しく始める", "Start Fresh"),
-        "codePlaceholderMac": ("例: AB12CD34", "e.g. AB12CD34"),
+        "codePlaceholderMac": ("例: AB12-CD34-EF56-GH78", "e.g. AB12-CD34-EF56-GH78"),
         "codePlaceholderIOS": ("Macに表示されているコード", "Code shown on the Mac app"),
         "connect": ("接続", "Connect"),
         "enterCodeNoteMac": ("別のMacまたはWindows版の「端末間同期」に表示されているコードを入力してください。", "Enter the code shown in Device Sync on another Mac or Windows PC."),
         "enterCodeNoteIOS": ("Mac版の「設定」→「端末間同期」に表示されているコードを入力してください。", "Enter the code shown in the Mac app's Settings → Device Sync."),
         "joinExistingHeader": ("既存のコードで参加する", "Join an Existing Group"),
+        "invalidPairingCode": ("16文字のペアリングコードを入力してください。ハイフンは省略できます。", "Enter the 16-character pairing code. Hyphens are optional."),
+        "pairingConnecting": ("安全な接続を準備しています…", "Preparing a secure connection…"),
+        "pairingFailed": ("接続できませんでした。コード、通信状態、Firebase設定を確認してください。", "Couldn't connect. Check the code, connection, and Firebase configuration."),
         "deviceSyncHeaderIOS": ("端末間同期", "Device Sync"),
 
         // MARK: Settings sync preference (iOS)

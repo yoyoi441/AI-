@@ -99,10 +99,12 @@ public static class L
         ["createNewCodeNote"] = ("最初の端末ではこちらを選び、表示されたコードをもう一方の端末へ入力してください。", "Choose this on the first device, then enter the displayed code on your other device."),
         ["joinExistingHeader"] = ("既存のコードで参加する", "Join an Existing Group"),
         ["connect"] = ("接続", "Connect"),
-        ["invalidPairingCode"] = ("8文字のペアリングコードを入力してください。", "Enter the eight-character pairing code."),
-        ["enterCodeNoteWindows"] = ("別のMacまたはWindows版に表示されている8文字のコードを入力します。", "Enter the eight-character code shown on another Mac or Windows PC."),
+        ["invalidPairingCode"] = ("16文字のペアリングコードを入力してください。ハイフンは省略できます。", "Enter the 16-character pairing code. Hyphens are optional."),
+        ["enterCodeNoteWindows"] = ("別のMacまたはWindows版に表示されている16文字のコードを入力します。", "Enter the 16-character code shown on another Mac or Windows PC."),
+        ["pairingConnecting"] = ("安全な接続を準備しています…", "Preparing a secure connection…"),
+        ["pairingFailed"] = ("接続できませんでした。コード、通信状態、Firebase設定を確認してください。", "Couldn't connect. Check the code, connection, and Firebase configuration."),
         ["syncPrivacyHeader"] = ("同期されるデータ", "Data That Is Synced"),
-        ["syncPrivacyNote"] = ("同期を有効にした場合のみ、直近9日分のトークン使用イベント（日時、モデル、トークン数、セッションID、プロジェクトパス）がFirebaseへ送信されます。Anthropic・OpenAIのログイン情報やAPIキーは送信しません。", "Only after you enable sync, the last nine days of token usage events (time, model, token counts, session ID, and project path) are sent to Firebase. Anthropic/OpenAI credentials and API keys are never uploaded."),
+        ["syncPrivacyNote"] = ("同期を有効にした場合のみ、匿名認証された参加端末間で直近9日分のトークン使用イベント（日時、モデル、トークン数、セッションID、プロジェクトパス）をFirebase経由で共有します。Anthropic・OpenAIのログイン情報やAPIキーは送信しません。", "Only after you enable sync, anonymously authenticated member devices share the last nine days of token usage events (time, model, token counts, session ID, and project path) through Firebase. Anthropic/OpenAI credentials and API keys are never uploaded."),
 
         // Appearance tab
         ["displayStyle"] = ("表示スタイル", "Display Style"),

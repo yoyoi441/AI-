@@ -390,6 +390,8 @@ private struct SyncSettingsTab: View, LocalizedView {
     @State private var syncId: String? = SyncPairing.syncId
     @State private var enteredCode: String = ""
     @State private var justCopied = false
+    @State private var pairingBusy = false
+    @State private var pairingStatusKey: String?
     @AppStorage(AppLanguagePreference.storageKey) private var appLanguageRaw = AppLanguage.japanese.rawValue
     var lang: AppLanguage { AppLanguagePreference.resolve(from: appLanguageRaw) }
 
@@ -406,12 +408,12 @@ private struct SyncSettingsTab: View, LocalizedView {
             } else if let syncId {
                 Section {
                     HStack {
-                        Text(syncId)
-                            .font(.system(.title2, design: .monospaced).bold())
+                        Text(SyncPairing.formatted(syncId))
+                            .font(.system(.title3, design: .monospaced).bold())
                         Spacer()
                         Button(justCopied ? t("copied") : t("copy")) {
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(syncId, forType: .string)
+                            NSPasteboard.general.setString(SyncPairing.formatted(syncId), forType: .string)
                             justCopied = true
                             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { justCopied = false }
                         }
@@ -425,18 +427,40 @@ private struct SyncSettingsTab: View, LocalizedView {
 
                 Section {
                     Button(t("unpairMac"), role: .destructive) {
-                        SyncPairing.syncId = nil
-                        self.syncId = nil
-                        monitor.syncPairingChanged()
+                        pairingBusy = true
+                        FirestoreSync.unpair(syncId: syncId) {
+                            DispatchQueue.main.async {
+                                SyncPairing.syncId = nil
+                                self.syncId = nil
+                                pairingBusy = false
+                                monitor.syncPairingChanged()
+                            }
+                        }
                     }
+                    .disabled(pairingBusy)
                 }
             } else {
                 Section {
                     Button(t("createNewCode")) {
                         let code = SyncPairing.generateNewSyncId()
-                        syncId = code
-                        monitor.syncPairingChanged()
+                        pairingBusy = true
+                        pairingStatusKey = "pairingConnecting"
+                        FirestoreSync.activatePairing(syncId: code, deviceId: SyncPairing.deviceId, createGroup: true) { result in
+                            DispatchQueue.main.async {
+                                pairingBusy = false
+                                switch result {
+                                case .success:
+                                    SyncPairing.syncId = code
+                                    syncId = code
+                                    pairingStatusKey = nil
+                                    monitor.syncPairingChanged()
+                                case .failure:
+                                    pairingStatusKey = "pairingFailed"
+                                }
+                            }
+                        }
                     }
+                    .disabled(pairingBusy)
                     Text(t("createNewCodeNote"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -450,13 +474,19 @@ private struct SyncSettingsTab: View, LocalizedView {
                             .textFieldStyle(.roundedBorder)
                             .onSubmit(connectWithEnteredCode)
                         Button(t("connect")) { connectWithEnteredCode() }
-                            .disabled(enteredCode.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .disabled(pairingBusy || enteredCode.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
                     Text(t("enterCodeNoteMac"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } header: {
                     Text(t("joinExistingHeader"))
+                }
+                if let pairingStatusKey {
+                    Section {
+                        Text(t(pairingStatusKey))
+                            .foregroundStyle(pairingStatusKey == "pairingFailed" || pairingStatusKey == "invalidPairingCode" ? .orange : .secondary)
+                    }
                 }
             }
         }
@@ -465,11 +495,27 @@ private struct SyncSettingsTab: View, LocalizedView {
     }
 
     private func connectWithEnteredCode() {
-        let code = enteredCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard !code.isEmpty else { return }
-        SyncPairing.syncId = code
-        syncId = code
-        monitor.syncPairingChanged()
+        guard let code = SyncPairing.normalize(enteredCode) else {
+            pairingStatusKey = "invalidPairingCode"
+            return
+        }
+        pairingBusy = true
+        pairingStatusKey = "pairingConnecting"
+        FirestoreSync.activatePairing(syncId: code, deviceId: SyncPairing.deviceId, createGroup: false) { result in
+            DispatchQueue.main.async {
+                pairingBusy = false
+                switch result {
+                case .success:
+                    SyncPairing.syncId = code
+                    syncId = code
+                    enteredCode = ""
+                    pairingStatusKey = nil
+                    monitor.syncPairingChanged()
+                case .failure:
+                    pairingStatusKey = "pairingFailed"
+                }
+            }
+        }
     }
 }
 

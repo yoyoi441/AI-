@@ -21,19 +21,41 @@ public enum SyncPairing {
     /// device to set this up) or pairs to an existing one (enters a code shown on
     /// another device).
     public static var syncId: String? {
-        get { UserDefaults.standard.string(forKey: syncIdKey) }
-        set { UserDefaults.standard.set(newValue, forKey: syncIdKey) }
+        get { normalize(UserDefaults.standard.string(forKey: syncIdKey)) }
+        set {
+            if let normalized = normalize(newValue) {
+                UserDefaults.standard.set(normalized, forKey: syncIdKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: syncIdKey)
+            }
+        }
     }
 
     /// Generates a new random pairing code for this device to be the "first" device in a
     /// sync group. Other devices then enter this same code to join.
     @discardableResult
     public static func generateNewSyncId() -> String {
-        // Short enough to type/copy comfortably, long enough (36^8 ≈ 2.8e12 combinations)
-        // that guessing another user's code by chance is impractical.
         let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") // no 0/O/1/I ambiguity
-        let code = String((0..<8).map { _ in alphabet.randomElement()! })
-        syncId = code
-        return code
+        return String((0..<16).map { _ in alphabet.randomElement()! })
+    }
+
+    public static func normalize(_ code: String?) -> String? {
+        guard let code else { return nil }
+        let normalized = code.uppercased()
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+        guard normalized.count == 16,
+              normalized.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return normalized
+    }
+
+    public static func formatted(_ code: String) -> String {
+        stride(from: 0, to: 16, by: 4).map { offset in
+            let start = code.index(code.startIndex, offsetBy: offset)
+            let end = code.index(start, offsetBy: 4)
+            return String(code[start..<end])
+        }.joined(separator: "-")
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import FirebaseCore
+import FirebaseAuth
 import FirebaseFirestore
 import ClaudeUsageCore
 
@@ -11,10 +12,9 @@ import ClaudeUsageCore
 ///
 /// No Anthropic/OpenAI credentials are involved — only token-usage counts.
 ///
-/// Devices are grouped by a random 8-character "sync ID" (see `SyncPairing`, ~42 bits of
-/// entropy — not brute-forceable in practice, though not real authentication) instead of
-/// real user accounts: this is a personal app for one person's own devices, not a
-/// multi-tenant service, so a shared secret is enough and avoids building a sign-in flow.
+/// Each installation receives a persistent anonymous Firebase identity. Devices join a
+/// group using a random 16-character capability code (~80 bits), and Firestore Security
+/// Rules restrict every group document to authenticated members.
 /// Firestore layout: `syncGroups/{syncId}/claudeEvents/{docId}`,
 /// `.../codexEvents/{docId}`, `.../codexRateLimits/latest`.
 ///
@@ -31,6 +31,8 @@ public enum FirestoreSync {
     // Only ever set from configureIfNeeded(), which every call site invokes before
     // touching Firestore; safe as plain mutable state without actor isolation.
     nonisolated(unsafe) private static var didConfigure = false
+    nonisolated(unsafe) private static var readyGroups = Set<String>()
+    private static let readyGroupsLock = NSLock()
 
     /// True once Firebase has a config to use. If the developer hasn't dropped in
     /// `GoogleService-Info.plist` yet, every sync operation becomes a no-op — the app
@@ -70,6 +72,102 @@ public enum FirestoreSync {
         db?.collection("syncGroups").document(syncId)
     }
 
+    public static func isReady(syncId: String) -> Bool {
+        readyGroupsLock.lock()
+        defer { readyGroupsLock.unlock() }
+        return readyGroups.contains(syncId)
+    }
+
+    private static func setReady(_ ready: Bool, syncId: String) {
+        readyGroupsLock.lock()
+        if ready { readyGroups.insert(syncId) } else { readyGroups.remove(syncId) }
+        readyGroupsLock.unlock()
+    }
+
+    /// Authenticates this installation and creates/joins the group membership checked by
+    /// Firestore rules. FirebaseAuth persists the anonymous account in the Keychain.
+    public static func activatePairing(
+        syncId: String,
+        deviceId: String,
+        createGroup: Bool,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        guard let normalized = SyncPairing.normalize(syncId) else {
+            completion(.failure(PairingError.invalidCode))
+            return
+        }
+        ensureAuthenticated { result in
+            switch result {
+            case .failure(let error): completion(.failure(error))
+            case .success(let user):
+                guard let group = groupRef(syncId: normalized), let db else {
+                    completion(.failure(PairingError.firebaseUnavailable))
+                    return
+                }
+                let batch = db.batch()
+                if createGroup {
+                    batch.setData([
+                        "ownerUid": user.uid,
+                        "createdAt": Timestamp(date: Date()),
+                        "schemaVersion": 2
+                    ], forDocument: group)
+                }
+                batch.setData([
+                    "deviceId": deviceId,
+                    "platform": "macos",
+                    "joinedAt": Timestamp(date: Date())
+                ], forDocument: group.collection("members").document(user.uid))
+                batch.commit { error in
+                    if let error { completion(.failure(error)); return }
+                    setReady(true, syncId: normalized)
+                    completion(.success(()))
+                }
+            }
+        }
+    }
+
+    public static func unpair(syncId: String, completion: @escaping () -> Void) {
+        guard let normalized = SyncPairing.normalize(syncId) else { completion(); return }
+        ensureAuthenticated { result in
+            guard case .success(let user) = result,
+                  let group = groupRef(syncId: normalized) else {
+                setReady(false, syncId: normalized)
+                completion()
+                return
+            }
+            group.collection("members").document(user.uid).delete { _ in
+                setReady(false, syncId: normalized)
+                completion()
+            }
+        }
+    }
+
+    private static func ensureAuthenticated(completion: @escaping (Result<User, Error>) -> Void) {
+        configureIfNeeded()
+        guard didConfigure else {
+            completion(.failure(PairingError.firebaseUnavailable))
+            return
+        }
+        if let user = Auth.auth().currentUser {
+            completion(.success(user))
+            return
+        }
+        Auth.auth().signInAnonymously { result, error in
+            if let error { completion(.failure(error)); return }
+            guard let user = result?.user else {
+                completion(.failure(PairingError.authenticationFailed))
+                return
+            }
+            completion(.success(user))
+        }
+    }
+
+    private enum PairingError: Error {
+        case invalidCode
+        case firebaseUnavailable
+        case authenticationFailed
+    }
+
     // MARK: - Claude events
 
     private struct ClaudeEventDocument: Codable {
@@ -77,8 +175,8 @@ public enum FirestoreSync {
         let event: UsageEvent
     }
 
-    public static func uploadClaudeEvents(_ events: [UsageEvent], syncId: String, deviceId: String) {
-        guard let group = groupRef(syncId: syncId), !events.isEmpty else { return }
+    public static func uploadClaudeEvents(_ events: [UsageEvent], syncId: String, deviceId: String, completion: @escaping (Bool) -> Void = { _ in }) {
+        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId), !events.isEmpty else { completion(false); return }
         let batch = db!.batch()
         for event in events {
             let docId = documentId(deviceId: deviceId, sessionId: event.sessionId, timestamp: event.timestamp)
@@ -88,6 +186,7 @@ public enum FirestoreSync {
         }
         batch.commit { error in
             if let error { print("FirestoreSync: claude upload failed: \(error)") }
+            completion(error == nil)
         }
     }
 
@@ -126,8 +225,8 @@ public enum FirestoreSync {
         let event: CodexUsageEvent
     }
 
-    public static func uploadCodexEvents(_ events: [CodexUsageEvent], syncId: String, deviceId: String) {
-        guard let group = groupRef(syncId: syncId), !events.isEmpty else { return }
+    public static func uploadCodexEvents(_ events: [CodexUsageEvent], syncId: String, deviceId: String, completion: @escaping (Bool) -> Void = { _ in }) {
+        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId), !events.isEmpty else { completion(false); return }
         let batch = db!.batch()
         for event in events {
             let docId = documentId(deviceId: deviceId, sessionId: event.sessionId, timestamp: event.timestamp)
@@ -137,6 +236,7 @@ public enum FirestoreSync {
         }
         batch.commit { error in
             if let error { print("FirestoreSync: codex upload failed: \(error)") }
+            completion(error == nil)
         }
     }
 
@@ -176,7 +276,7 @@ public enum FirestoreSync {
         syncId: String,
         deviceId: String
     ) {
-        guard let group = groupRef(syncId: syncId), let db else { return }
+        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId), let db else { return }
         let ref = group.collection("codexRateLimits").document("latest")
         db.runTransaction({ transaction, errorPointer in
             let existing = try? transaction.getDocument(ref).data(as: CodexRateLimitsDocument.self)
@@ -258,7 +358,7 @@ public enum FirestoreSync {
     }
 
     public static func uploadAppearanceSettings(_ settings: AppearanceSettingsDocument, syncId: String) {
-        guard let group = groupRef(syncId: syncId) else { return }
+        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId) else { return }
         let ref = group.collection("settings").document("appearance")
         guard let data = try? Firestore.Encoder().encode(settings) else { return }
         ref.setData(data) { error in
@@ -298,7 +398,7 @@ public enum FirestoreSync {
     }
 
     public static func sendRemoteNotification(title: String, body: String, syncId: String, deviceId: String) {
-        guard let group = groupRef(syncId: syncId) else { return }
+        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId) else { return }
         let doc = RemoteNotificationDocument(sourceDeviceId: deviceId, title: title, body: body, createdAt: Date())
         guard let data = try? Firestore.Encoder().encode(doc) else { return }
         group.collection("notifications").document(UUID().uuidString).setData(data) { error in

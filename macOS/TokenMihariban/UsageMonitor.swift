@@ -143,6 +143,20 @@ final class UsageMonitor: ObservableObject {
     private func startCloudSyncIfPaired() {
         guard FirestoreSync.isAvailable, let syncId = SyncPairing.syncId else { return }
 
+        FirestoreSync.activatePairing(syncId: syncId, deviceId: deviceId, createGroup: false) { [weak self] result in
+            guard case .success = result else { return }
+            Task { @MainActor in
+                self?.attachCloudSyncListeners(syncId: syncId)
+                self?.refresh()
+            }
+        }
+    }
+
+    private func attachCloudSyncListeners(syncId: String) {
+        claudeListener?.remove()
+        codexEventsListener?.remove()
+        codexRateLimitsListener?.remove()
+
         claudeListener = FirestoreSync.observeClaudeEvents(syncId: syncId, excludingDeviceId: deviceId) { [weak self] events in
             Task { @MainActor in
                 self?.remoteClaudeEvents = events
@@ -299,8 +313,8 @@ final class UsageMonitor: ObservableObject {
         // local pool, not just this cycle's increment: the per-syncId watermark is the
         // only thing that decides what's already uploaded, so switching pairing codes
         // (a fresh watermark) correctly re-uploads full history without needing a relaunch.
-        uploadNewEventsToCloud(allEvents, watermarkKeyPrefix: "lastUploadedClaudeEventAt", timestamp: \.timestamp) { events, syncId, deviceId in
-            FirestoreSync.uploadClaudeEvents(events, syncId: syncId, deviceId: deviceId)
+        uploadNewEventsToCloud(allEvents, watermarkKeyPrefix: "lastUploadedClaudeEventAt", timestamp: \.timestamp) { events, syncId, deviceId, completion in
+            FirestoreSync.uploadClaudeEvents(events, syncId: syncId, deviceId: deviceId, completion: completion)
         }
 
         let defaults = UserDefaults.standard
@@ -334,16 +348,24 @@ final class UsageMonitor: ObservableObject {
         _ events: [Event],
         watermarkKeyPrefix: String,
         timestamp: (Event) -> Date,
-        upload: ([Event], String, String) -> Void
+        upload: ([Event], String, String, @escaping (Bool) -> Void) -> Void
     ) {
-        guard FirestoreSync.isAvailable, let syncId = SyncPairing.syncId else { return }
+        guard FirestoreSync.isAvailable, let syncId = SyncPairing.syncId, FirestoreSync.isReady(syncId: syncId) else { return }
         let watermarkKey = "\(watermarkKeyPrefix)_\(syncId)"
         let watermark = UserDefaults.standard.object(forKey: watermarkKey) as? Double
-        let toUpload = watermark.map { mark in events.filter { timestamp($0).timeIntervalSince1970 > mark } } ?? events
+        let recentFloor = Date().addingTimeInterval(-9 * 24 * 60 * 60).timeIntervalSince1970
+        let effectiveFloor = max(recentFloor, watermark ?? recentFloor)
+        let toUpload = Array(events
+            .filter { timestamp($0).timeIntervalSince1970 > effectiveFloor }
+            .sorted { timestamp($0) < timestamp($1) }
+            .prefix(400))
         guard !toUpload.isEmpty else { return }
-        upload(toUpload, syncId, deviceId)
-        if let newest = toUpload.map({ timestamp($0) }).max() {
-            UserDefaults.standard.set(newest.timeIntervalSince1970, forKey: watermarkKey)
+        guard let newest = toUpload.map({ timestamp($0) }).max() else { return }
+        upload(toUpload, syncId, deviceId) { succeeded in
+            guard succeeded else { return }
+            DispatchQueue.main.async {
+                UserDefaults.standard.set(newest.timeIntervalSince1970, forKey: watermarkKey)
+            }
         }
     }
 
@@ -370,8 +392,8 @@ final class UsageMonitor: ObservableObject {
         if !newEvents.isEmpty {
             allCodexEvents.append(contentsOf: newEvents)
         }
-        uploadNewEventsToCloud(allCodexEvents, watermarkKeyPrefix: "lastUploadedCodexEventAt", timestamp: \.timestamp) { events, syncId, deviceId in
-            FirestoreSync.uploadCodexEvents(events, syncId: syncId, deviceId: deviceId)
+        uploadNewEventsToCloud(allCodexEvents, watermarkKeyPrefix: "lastUploadedCodexEventAt", timestamp: \.timestamp) { events, syncId, deviceId, completion in
+            FirestoreSync.uploadCodexEvents(events, syncId: syncId, deviceId: deviceId, completion: completion)
         }
 
         // Relay this device's freshest known rate-limit reading to the group on every

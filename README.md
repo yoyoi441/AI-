@@ -14,7 +14,7 @@ Claude CodeとCodexが端末内に保存したローカルログを読み取り�
 - 使用量の目安と通知
 - CSV / JSON書き出し
 - アプリ内からGitHub Releasesの更新を確認・インストール
-- 任意の端末間同期の画面と基盤（公開プレビューでは安全な認証を準備中のため無効）
+- 任意の端末間同期（Firebase匿名認証・参加端末限定アクセス）
 - 日本語・英語表示
 
 ## ダウンロード
@@ -45,12 +45,15 @@ Claude CodeとCodexが端末内に保存したローカルログを読み取り�
 インストーラーを起動し、macOS版は新しいアプリを検証して現在のアプリと置き換えます。
 GitHubが公開するSHA-256ダイジェストがある場合は、インストール前に照合します。
 
-## 端末間同期（準備中）
+## 端末間同期
 
-同期画面とWindows/macOS共通のペアリング・集計処理は実装済みですが、公開プレビューでは
-安全な利用者認証を準備中のため無効です。認証を整えたリリースでは、設定の「端末間同期」で
-8文字のペアリングコードを共有し、直近9日分のClaude Code / Codex使用イベントを
-Firebase経由で合算できるようにする予定です。
+設定の「端末間同期」で16文字のペアリングコードを共有すると、直近9日分の
+Claude Code / Codex使用イベントをWindows版とmacOS版で合算できます。コードは
+約80ビットのランダム値で、表示時は`ABCD-EFGH-JKLM-NPQR`のように区切られます。
+
+同期を有効にした端末はFirebase Authenticationへ匿名でサインインします。Firestoreでは
+ペアリングコードを知って参加処理を完了した端末ごとにメンバー情報を作成し、Security Rulesで
+メンバー以外の読取り・書込み、同期グループの一覧取得、不正なトークン値を拒否します。
 
 有効化後に同期対象となる項目は日時、モデル、トークン数、セッションID、プロジェクトパスです。
 Anthropic・OpenAIのログイン情報やAPIキーは同期対象にしません。
@@ -71,10 +74,25 @@ dotnet run --project TokenMihariban/TokenMihariban.csproj
 Xcodeで`macOS/TokenMihariban.xcodeproj`を開き、`ClaudeUsage`ターゲットをビルドします。
 Firebase同期を有効にする開発ビルドでは、
 `macOS/TokenMihariban/GoogleService-Info.plist`を追加してください。このファイルは
-Git管理対象外です。
+Git管理対象外です。Swift Packageから`FirebaseAuth`と`FirebaseFirestore`を使用します。
+
+## Firebase同期のセットアップ
+
+1. Firebase ConsoleのAuthenticationで「匿名」プロバイダを有効にします。
+2. `firebase deploy --only firestore:rules,firestore:indexes`で`firestore.rules`を配備します。
+3. Windows用のWeb APIキーとProject IDをGitHub Actionsの
+   `FIREBASE_API_KEY`、`FIREBASE_PROJECT_ID`へ登録します。
+4. macOS用`GoogleService-Info.plist`をBase64化し、
+   `FIREBASE_GOOGLE_SERVICE_INFO_B64`へ登録します。
+
+FirebaseのクライアントAPIキーはアプリ設定を識別する値で、データへの権限そのものでは
+ありません。データ保護はAuthenticationと`firestore.rules`で行います。ルールを配備する前に
+同期設定入りのアプリを公開しないでください。
 
 ## プライバシー
 
-同期を設定していない場合、利用状況は端末外へ送信されません。ローカルJSONLログは
+同期を設定していない場合、Firebase Authenticationへの接続や利用状況の送信は行いません。
+Windowsの匿名認証更新トークンはWindows DPAPIで現在のユーザー用に暗号化し、macOSでは
+Firebase AuthがKeychainへ保存します。ローカルJSONLログは
 集計のために読み取るだけで、元ファイルを書き換えません。アプリ内更新の確認時には
 GitHub APIへ現在のバージョン確認を行います。

@@ -234,9 +234,10 @@ public partial class SettingsWindow : Window
             stack.Children.Add(status);
 
             var unpair = new Button { Content = L.String("unpairWindows", lang), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 18, 0, 0), Padding = new Thickness(10, 4, 10, 4) };
-            unpair.Click += (_, _) =>
+            unpair.Click += async (_, _) =>
             {
-                _app.Monitor.SetSyncPairingCode(null);
+                unpair.IsEnabled = false;
+                await _app.Monitor.UnpairSyncAsync();
                 Rebuild();
             };
             stack.Children.Add(unpair);
@@ -244,23 +245,45 @@ public partial class SettingsWindow : Window
         else
         {
             var create = new Button { Content = L.String("createNewCode", lang), HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 4, 10, 4) };
-            create.Click += (_, _) =>
+            var createStatus = new TextBlock { Opacity = 0.7, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap };
+            create.Click += async (_, _) =>
             {
-                _app.Monitor.CreateSyncPairingCode();
-                Rebuild();
+                create.IsEnabled = false;
+                createStatus.Text = L.String("pairingConnecting", lang);
+                var code = await _app.Monitor.CreateSyncPairingCodeAsync();
+                if (code is not null) Rebuild();
+                else
+                {
+                    createStatus.Text = L.String("pairingFailed", lang);
+                    create.IsEnabled = true;
+                }
             };
             stack.Children.Add(create);
+            stack.Children.Add(createStatus);
             stack.Children.Add(FooterNote(L.String("createNewCodeNote", lang)));
 
             stack.Children.Add(SectionHeader(L.String("joinExistingHeader", lang)));
             var row = new StackPanel { Orientation = Orientation.Horizontal };
-            var input = new TextBox { Width = 180, MaxLength = 8, CharacterCasing = System.Windows.Controls.CharacterCasing.Upper, Padding = new Thickness(5), FontFamily = new System.Windows.Media.FontFamily("Consolas") };
+            var input = new TextBox { Width = 220, MaxLength = 19, CharacterCasing = System.Windows.Controls.CharacterCasing.Upper, Padding = new Thickness(5), FontFamily = new System.Windows.Media.FontFamily("Consolas") };
             var connect = new Button { Content = L.String("connect", lang), Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(10, 4, 10, 4) };
             var validation = new TextBlock { Foreground = Brushes.DarkOrange, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap };
-            connect.Click += (_, _) =>
+            connect.Click += async (_, _) =>
             {
-                if (_app.Monitor.SetSyncPairingCode(input.Text)) Rebuild();
-                else validation.Text = L.String("invalidPairingCode", lang);
+                if (FirestoreSyncService.NormalizePairingCode(input.Text) is null)
+                {
+                    validation.Text = L.String("invalidPairingCode", lang);
+                    return;
+                }
+                connect.IsEnabled = false;
+                input.IsEnabled = false;
+                validation.Text = L.String("pairingConnecting", lang);
+                if (await _app.Monitor.JoinSyncPairingCodeAsync(input.Text)) Rebuild();
+                else
+                {
+                    validation.Text = L.String("pairingFailed", lang);
+                    connect.IsEnabled = true;
+                    input.IsEnabled = true;
+                }
             };
             row.Children.Add(input);
             row.Children.Add(connect);

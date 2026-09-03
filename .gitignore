@@ -9,5 +9,6 @@ artifacts/
 .env
 .build/
 .swiftpm/
+node_modules/
 TokenMihariban/firebase.config.json
 macOS/TokenMihariban/GoogleService-Info.plist
