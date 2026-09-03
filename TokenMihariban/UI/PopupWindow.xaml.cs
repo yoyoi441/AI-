@@ -100,8 +100,9 @@ public partial class PopupWindow : Window
 
         var showClaude = settings.HasKey("showClaudeProvider") ? settings.GetBool("showClaudeProvider", true) : true;
         var showCodex = settings.HasKey("showCodexProvider") ? settings.GetBool("showCodexProvider", true) : true;
+        var showOllama = settings.HasKey("showOllamaProvider") ? settings.GetBool("showOllamaProvider", true) : true;
 
-        var overview = BuildProviderOverview(monitor.Snapshot, monitor.CodexSnapshot, settings, showClaude, showCodex);
+        var overview = BuildProviderOverview(monitor.Snapshot, monitor.CodexSnapshot, monitor.OllamaSnapshot, settings, showClaude, showCodex, showOllama);
         if (overview is not null)
         {
             RootPanel.Children.Add(overview);
@@ -111,14 +112,18 @@ public partial class PopupWindow : Window
         if (showClaude) RootPanel.Children.Add(BuildClaudeCard(monitor.Snapshot, settings, lang));
         if (showClaude && showCodex) RootPanel.Children.Add(new Border { Height = 12 });
         if (showCodex) RootPanel.Children.Add(BuildCodexCard(monitor.CodexSnapshot, settings, lang));
+        if (showOllama && (showClaude || showCodex)) RootPanel.Children.Add(new Border { Height = 12 });
+        if (showOllama) RootPanel.Children.Add(BuildOllamaCard(monitor.OllamaSnapshot, settings, lang));
     }
 
     private static FrameworkElement? BuildProviderOverview(
         UsageSnapshot claude,
         CodexSnapshot codex,
+        OllamaSnapshot ollama,
         AppSettings settings,
         bool showClaude,
-        bool showCodex)
+        bool showCodex,
+        bool showOllama)
     {
         var metric = GaugeMetricExtensions.FromStorageValue(settings.GetString("menuBarMetric"));
         var useGradient = settings.HasKey("gaugeUseGradient") ? settings.GetBool("gaugeUseGradient", true) : true;
@@ -140,6 +145,14 @@ public partial class PopupWindow : Window
                 ? primary.Fraction
                 : TimeFraction(primary.ResetsAt, primary.WindowMinutes);
             rings.Add(GaugeControls.Ring(fraction, color, useGradient, $"{Math.Round(fraction * 100)}%", "Codex", 76));
+        }
+
+        if (showOllama && ollama.TodayTotalTokens > 0)
+        {
+            var color = GaugeControls.ParseColor(ollama.ColorHex, Colors.DarkOrange);
+            var fraction = ollama.TargetFraction ?? 1;
+            var center = ollama.TargetFraction is null ? CompactTokens(ollama.TodayTotalTokens) : $"{Math.Round(fraction * 100)}%";
+            rings.Add(GaugeControls.Ring(fraction, color, useGradient, center, "Ollama", 76));
         }
 
         return rings.Count == 0 ? null : WrapGauges(rings, isRing: true);
@@ -288,6 +301,63 @@ public partial class PopupWindow : Window
         return Card(stack);
     }
 
+    private FrameworkElement BuildOllamaCard(OllamaSnapshot snapshot, AppSettings settings, AppLanguage lang)
+    {
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock { Text = "Ollama", FontSize = 14, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 8) });
+        var color = GaugeControls.ParseColor(snapshot.ColorHex, Colors.DarkOrange);
+        var useGradient = settings.HasKey("gaugeUseGradient") ? settings.GetBool("gaugeUseGradient", true) : true;
+        var isRing = GaugeDisplayStyleExtensions.FromStorageValue(settings.GetString("gaugeStyle")) == GaugeDisplayStyle.Ring;
+        var fraction = snapshot.TargetFraction ?? 0;
+        var gaugeColor = fraction >= 1 ? Colors.Red : color;
+        var caption = snapshot.DailyTokenTarget > 0
+            ? $"{FormatTokens(snapshot.TodayTotalTokens)} / {FormatTokens((long)snapshot.DailyTokenTarget)}"
+            : L.String("ollamaNoTargetCaption", lang);
+
+        if (isRing)
+        {
+            var center = snapshot.TargetFraction is null ? CompactTokens(snapshot.TodayTotalTokens) : $"{Math.Round(fraction * 100)}%";
+            stack.Children.Add(GaugeControls.Ring(fraction, gaugeColor, useGradient, center, caption));
+        }
+        else
+        {
+            stack.Children.Add(GaugeControls.Bar(fraction, gaugeColor, useGradient, L.String("dailyTargetGaugeCaption", lang), caption));
+        }
+
+        if (snapshot.TodayTotalTokens == 0)
+        {
+            stack.Children.Add(new TextBlock { Text = L.String("ollamaNoData", lang), FontSize = 11, Opacity = 0.65, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) });
+        }
+
+        if (!settings.HasKey("showTodaySummary") || settings.GetBool("showTodaySummary", true))
+        {
+            var summary = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
+            summary.Children.Add(new TextBlock { Text = L.String("today", lang), FontSize = 12, FontWeight = FontWeights.Bold });
+            summary.Children.Add(new TextBlock { Text = L.String("totalTokensFormat", lang, FormatTokens(snapshot.TodayTotalTokens)), FontSize = 12 });
+            summary.Children.Add(new TextBlock { Text = L.String("ollamaLocalFormat", lang, FormatTokens(snapshot.TodayLocalTokens)), FontSize = 11, Opacity = 0.65 });
+            summary.Children.Add(new TextBlock { Text = L.String("ollamaCloudFormat", lang, FormatTokens(snapshot.TodayCloudTokens)), FontSize = 11, Opacity = 0.65 });
+            stack.Children.Add(summary);
+        }
+
+        if (settings.GetBool("showEstimatedCost", false) && snapshot.TodayCloudTokens > 0)
+        {
+            stack.Children.Add(new TextBlock { Text = L.String("estimatedCostFormat", lang, "$" + snapshot.TodayCloudEstimatedCostUSD.ToString("F4", CultureInfo.InvariantCulture)), FontSize = 11, Opacity = 0.65, Margin = new Thickness(0, 4, 0, 0) });
+            stack.Children.Add(new TextBlock { Text = L.String("ollamaCloudCostNote", lang), FontSize = 10, Opacity = 0.65, TextWrapping = TextWrapping.Wrap });
+            if (snapshot.HasUnpricedCloudModelToday)
+                stack.Children.Add(new TextBlock { Text = L.String("unpricedModelWarning", lang), FontSize = 10, Opacity = 0.65, TextWrapping = TextWrapping.Wrap });
+        }
+
+        if (settings.GetBool("showHourlyChart", true) && snapshot.HourlyTokensToday.Count > 0)
+        {
+            stack.Children.Add(new TextBlock { Text = L.String("hourlyChartTitle", lang), FontSize = 12, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, 4) });
+            stack.Children.Add(SimpleBarChart.Build(snapshot.HourlyTokensToday.Select(p => (double)p.Tokens).ToList(), color));
+        }
+        if (!settings.HasKey("showLast7Days") || settings.GetBool("showLast7Days", true))
+            stack.Children.Add(new TextBlock { Text = L.String("last7DaysFormat", lang, FormatTokens(snapshot.Last7DaysTotalTokens)), FontSize = 11, Opacity = 0.65, Margin = new Thickness(0, 8, 0, 0) });
+
+        return Card(stack);
+    }
+
     private void AddAlertGauges(StackPanel stack, long todayTotal, System.Collections.Generic.IReadOnlyList<HourlyUsagePoint> hourly, AppSettings settings, Color color, bool isRing, bool useGradient, AppLanguage lang, bool isCodex)
     {
         var dailyEnabled = settings.GetBool("dailyTargetEnabled", false);
@@ -409,4 +479,11 @@ public partial class PopupWindow : Window
     }
 
     private static string FormatTokens(long count) => count.ToString("N0", CultureInfo.InvariantCulture);
+
+    private static string CompactTokens(long count) => count switch
+    {
+        >= 1_000_000 => (count / 1_000_000d).ToString("0.#", CultureInfo.InvariantCulture) + "M",
+        >= 1_000 => (count / 1_000d).ToString("0.#", CultureInfo.InvariantCulture) + "K",
+        _ => count.ToString(CultureInfo.InvariantCulture)
+    };
 }

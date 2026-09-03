@@ -61,7 +61,7 @@ jobs:
       - name: Publish self-contained app
         shell: pwsh
         run: |
-          $version = if ($env:GITHUB_REF_NAME -match '^v(.+)$') { $Matches[1] } else { '0.3.1' }
+          $version = if ($env:GITHUB_REF_NAME -match '^v(.+)$') { $Matches[1] } else { '0.4.0' }
           dotnet publish TokenMihariban/TokenMihariban.csproj --configuration Release -p:PublishProfile=win-x64 -p:Version=$version
 
       - name: Upload portable app
@@ -76,7 +76,7 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
-          $version = if ($env:GITHUB_REF_NAME -match '^v(.+)$') { $Matches[1] } else { '0.3.1' }
+          $version = if ($env:GITHUB_REF_NAME -match '^v(.+)$') { $Matches[1] } else { '0.4.0' }
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "installer\TokenMihariban.iss"
 
       - name: Upload installer
@@ -109,7 +109,7 @@ jobs:
       - name: Build universal macOS app
         shell: bash
         run: |
-          version="0.3.1"
+          version="0.4.0"
           if [[ "$GITHUB_REF_NAME" =~ ^v(.+)$ ]]; then version="${BASH_REMATCH[1]}"; fi
           xcodebuild \
             -project macOS/TokenMihariban.xcodeproj \
@@ -120,6 +120,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             MARKETING_VERSION="$version" \
             CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
             build
 
       - name: Ad-hoc sign and package

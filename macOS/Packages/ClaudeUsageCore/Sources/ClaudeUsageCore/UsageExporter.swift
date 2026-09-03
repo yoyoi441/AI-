@@ -1,6 +1,6 @@
 import Foundation
 
-/// One Claude Code API call or Codex CLI turn, flattened into a single exportable row.
+/// One Claude Code, Codex, or Ollama call, flattened into a single exportable row.
 /// Kept as raw per-event rows (not pre-aggregated by day/model) so a spreadsheet or
 /// script on the receiving end can group/pivot however the user actually needs —
 /// aggregating here would throw away information there's no way to recover afterward.
@@ -15,8 +15,8 @@ public struct UsageExportRow: Codable, Equatable, Sendable {
     public let cacheCreationTokens: Int
     public let cacheReadTokens: Int
     public let totalTokens: Int
-    /// nil for Codex (flat subscription, no per-token price) and for Claude models not
-    /// in `PricingTable` — never a silent $0, matching how the in-app cost total works.
+    /// nil for Codex, local Ollama, and models without a known public token rate — never
+    /// a silent $0, matching how the in-app cost total works.
     public let estimatedCostUSD: Double?
 
     public init(
@@ -53,6 +53,7 @@ public enum UsageExporter {
     public static func rows(
         claudeEvents: [UsageEvent],
         codexEvents: [CodexUsageEvent],
+        ollamaEvents: [OllamaUsageEvent],
         from start: Date,
         to end: Date
     ) -> [UsageExportRow] {
@@ -98,7 +99,27 @@ public enum UsageExporter {
                 )
             }
 
-        return (claudeRows + codexRows).sorted { $0.timestamp < $1.timestamp }
+        let ollamaRows = ollamaEvents
+            .filter { $0.timestamp >= start && $0.timestamp <= end }
+            .map { event -> UsageExportRow in
+                UsageExportRow(
+                    timestamp: event.timestamp,
+                    provider: event.source == .cloud ? "Ollama Cloud" : "Ollama Local",
+                    model: event.model,
+                    projectPath: "",
+                    sessionId: event.requestId,
+                    inputTokens: event.inputTokens,
+                    outputTokens: event.outputTokens,
+                    cacheCreationTokens: 0,
+                    cacheReadTokens: 0,
+                    totalTokens: event.totalTokens,
+                    estimatedCostUSD: event.source == .cloud
+                        ? OllamaUsageComputer.estimatedCloudCostUSD(model: event.model, inputTokens: event.inputTokens, outputTokens: event.outputTokens)
+                        : nil
+                )
+            }
+
+        return (claudeRows + codexRows + ollamaRows).sorted { $0.timestamp < $1.timestamp }
     }
 
     // Configured once and never mutated afterward, so shared read-only access across

@@ -40,6 +40,7 @@ private struct GeneralSettingsTab: View, LocalizedView {
     @State private var isCheckingForUpdate = false
     @State private var updateStatus = ""
     @AppStorage("automaticUpdateCheckEnabled") private var automaticUpdateCheckEnabled = true
+    @AppStorage("ollamaMonitoringEnabled") private var ollamaMonitoringEnabled = true
     @AppStorage("notificationsEnabled") private var notificationsEnabled = true
     @AppStorage(AppLanguagePreference.storageKey) private var appLanguageRaw = AppLanguage.japanese.rawValue
     var lang: AppLanguage { AppLanguagePreference.resolve(from: appLanguageRaw) }
@@ -78,6 +79,26 @@ private struct GeneralSettingsTab: View, LocalizedView {
                 }
             } header: {
                 Text(t("rescanHeader"))
+            }
+
+            Section {
+                Toggle(t("ollamaMonitoringToggle"), isOn: $ollamaMonitoringEnabled)
+                    .onChange(of: ollamaMonitoringEnabled) { _, enabled in
+                        monitor.setOllamaMonitoringEnabled(enabled)
+                    }
+                Text(ollamaStatusText)
+                    .foregroundStyle(monitor.ollamaProxyState.isFailure ? .red : .secondary)
+                Text(t("ollamaLocalProxyFormat", monitor.ollamaLocalProxyURL))
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+                Text(t("ollamaCloudProxyFormat", monitor.ollamaCloudProxyURL))
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+                Text(t("ollamaMonitoringNote"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text(t("ollamaMonitoringHeader"))
             }
 
             Section {
@@ -130,6 +151,15 @@ private struct GeneralSettingsTab: View, LocalizedView {
         .padding(.top, 8)
     }
 
+    private var ollamaStatusText: String {
+        switch monitor.ollamaProxyState {
+        case .stopped: return t("ollamaMonitoringStopped")
+        case .starting: return t("ollamaMonitoringStarting")
+        case .running: return t("ollamaMonitoringRunning")
+        case .failed(let message): return t("ollamaMonitoringFailedFormat", message)
+        }
+    }
+
     @MainActor
     private func checkForUpdates() async {
         isCheckingForUpdate = true
@@ -163,6 +193,7 @@ private struct AppearanceSettingsTab: View, LocalizedView {
     @AppStorage("gaugeUseGradient") private var gaugeUseGradient: Bool = GaugeAppearance.default.useGradient
     @AppStorage("gaugeStyle") private var gaugeStyle: GaugeDisplayStyle = GaugeAppearance.default.style
     @AppStorage("codexColorHex") private var codexColorHex: String = CodexSnapshot.empty.colorHex
+    @AppStorage("ollamaColorHex") private var ollamaColorHex: String = OllamaSnapshot.empty.colorHex
     @AppStorage("menuBarMetric") private var menuBarMetricRaw = GaugeMetric.timeRemaining.rawValue
     @AppStorage(AppLanguagePreference.storageKey) private var appLanguageRaw = AppLanguage.japanese.rawValue
     var lang: AppLanguage { AppLanguagePreference.resolve(from: appLanguageRaw) }
@@ -178,6 +209,13 @@ private struct AppearanceSettingsTab: View, LocalizedView {
         Binding(
             get: { Color(hex: codexColorHex) ?? .green },
             set: { codexColorHex = $0.hexString }
+        )
+    }
+
+    private var ollamaColorBinding: Binding<Color> {
+        Binding(
+            get: { Color(hex: ollamaColorHex) ?? .orange },
+            set: { ollamaColorHex = $0.hexString }
         )
     }
 
@@ -216,6 +254,14 @@ private struct AppearanceSettingsTab: View, LocalizedView {
                     Label(t("codexColorLabel"), systemImage: "paintpalette.fill")
                 }
                 .onChange(of: codexColorHex) { _, _ in
+                    monitor.refresh()
+                    monitor.pushAppearanceSettingsIfPaired()
+                }
+
+                ColorPicker(selection: ollamaColorBinding, supportsOpacity: false) {
+                    Label(t("ollamaColorLabel"), systemImage: "paintpalette")
+                }
+                .onChange(of: ollamaColorHex) { _, _ in
                     monitor.refresh()
                     monitor.pushAppearanceSettingsIfPaired()
                 }
@@ -309,6 +355,7 @@ private struct DisplayItemsSettingsTab: View, LocalizedView {
     @ObservedObject var monitor: UsageMonitor
     @AppStorage("showClaudeProvider") private var showClaudeProvider = true
     @AppStorage("showCodexProvider") private var showCodexProvider = true
+    @AppStorage("showOllamaProvider") private var showOllamaProvider = true
     @AppStorage("showTimeGauge") private var showTimeGauge = true
     @AppStorage("showTokenGauge") private var showTokenGauge = true
     @AppStorage("showTodaySummary") private var showTodaySummary = true
@@ -331,6 +378,10 @@ private struct DisplayItemsSettingsTab: View, LocalizedView {
                     Label(t("showCodexProviderToggle"), systemImage: "cpu")
                 }
                 .onChange(of: showCodexProvider) { _, _ in monitor.pushAppearanceSettingsIfPaired() }
+                Toggle(isOn: $showOllamaProvider) {
+                    Label(t("showOllamaProviderToggle"), systemImage: "server.rack")
+                }
+                .onChange(of: showOllamaProvider) { _, _ in monitor.pushAppearanceSettingsIfPaired() }
             } header: {
                 Text(t("providersHeader"))
             } footer: {
@@ -494,6 +545,14 @@ private struct SyncSettingsTab: View, LocalizedView {
                     }
                 }
             }
+
+            Section {
+                Text(t("syncPrivacyNote"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text(t("syncPrivacyHeader"))
+            }
         }
         .formStyle(.grouped)
         .padding(.top, 8)
@@ -526,7 +585,7 @@ private struct SyncSettingsTab: View, LocalizedView {
 
 private struct TokenTargetSettingsTab: View, LocalizedView {
     private enum TargetField: Hashable {
-        case manualBlock, claudeDaily, codexDaily, claudeWindow, codexWindow
+        case manualBlock, claudeDaily, codexDaily, ollamaDaily, claudeWindow, codexWindow
     }
 
     @ObservedObject var monitor: UsageMonitor
@@ -535,6 +594,7 @@ private struct TokenTargetSettingsTab: View, LocalizedView {
     @AppStorage("windowTargetEnabled") private var windowTargetEnabled = false
     @AppStorage("claudeDailyTokenTarget") private var claudeDailyTokenTarget: Double = 0
     @AppStorage("codexDailyTokenTarget") private var codexDailyTokenTarget: Double = 0
+    @AppStorage("ollamaDailyTokenTarget") private var ollamaDailyTokenTarget: Double = 0
     @AppStorage("claudeWindowTokenTarget") private var claudeWindowTokenTarget: Double = 0
     @AppStorage("codexWindowTokenTarget") private var codexWindowTokenTarget: Double = 0
     @AppStorage("customWindowStartMinute") private var customWindowStartMinute: Int = DailyTimeWindow.default.startMinute
@@ -587,6 +647,9 @@ private struct TokenTargetSettingsTab: View, LocalizedView {
                     TextField(t("codexDailyTargetPlaceholder"), value: $codexDailyTokenTarget, format: .number)
                         .textFieldStyle(.roundedBorder)
                         .focused($focusedField, equals: .codexDaily)
+                    TextField(t("ollamaDailyTargetPlaceholder"), value: $ollamaDailyTokenTarget, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focusedField, equals: .ollamaDaily)
                     Text(t("dailyTargetNote"))
                         .font(.callout)
                         .foregroundStyle(.secondary)

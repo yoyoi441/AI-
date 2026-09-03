@@ -123,6 +123,30 @@ public partial class SettingsWindow : Window
         stack.Children.Add(slider);
         stack.Children.Add(FooterNote(L.String("rescanNote", lang)));
 
+        stack.Children.Add(SectionHeader(L.String("ollamaMonitoringHeader", lang)));
+        var ollamaEnabled = !settings.HasKey("ollamaMonitoringEnabled") || settings.GetBool("ollamaMonitoringEnabled", true);
+        var ollamaStatus = new TextBlock { Opacity = 0.75, TextWrapping = TextWrapping.Wrap };
+        void UpdateOllamaStatus()
+        {
+            ollamaStatus.Text = _app.Monitor.OllamaProxyState switch
+            {
+                Ollama.OllamaProxyState.Running => L.String("ollamaMonitoringRunning", lang),
+                Ollama.OllamaProxyState.Starting => L.String("ollamaMonitoringStarting", lang),
+                Ollama.OllamaProxyState.Failed => L.String("ollamaMonitoringFailedFormat", lang, _app.Monitor.OllamaProxyError ?? ""),
+                _ => L.String("ollamaMonitoringStopped", lang)
+            };
+        }
+        stack.Children.Add(Toggle(L.String("ollamaMonitoringToggle", lang), ollamaEnabled, enabled =>
+        {
+            _app.Monitor.SetOllamaMonitoringEnabled(enabled);
+            UpdateOllamaStatus();
+        }));
+        UpdateOllamaStatus();
+        stack.Children.Add(ollamaStatus);
+        stack.Children.Add(new TextBlock { Text = L.String("ollamaLocalProxyFormat", lang, _app.Monitor.OllamaLocalProxyUrl), FontFamily = new System.Windows.Media.FontFamily("Consolas"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) });
+        stack.Children.Add(new TextBlock { Text = L.String("ollamaCloudProxyFormat", lang, _app.Monitor.OllamaCloudProxyUrl), FontFamily = new System.Windows.Media.FontFamily("Consolas"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
+        stack.Children.Add(FooterNote(L.String("ollamaMonitoringNote", lang)));
+
         stack.Children.Add(SectionHeader(L.String("updatesHeader", lang)));
         stack.Children.Add(new TextBlock { Text = L.String("currentVersionFormat", lang, UpdateService.CurrentVersion.ToString(3)), Opacity = 0.75 });
         var automaticUpdateCheckEnabled = settings.HasKey("automaticUpdateCheckEnabled")
@@ -330,6 +354,7 @@ public partial class SettingsWindow : Window
         stack.Children.Add(SectionHeader(L.String("colorHeader", lang)));
         stack.Children.Add(ColorRow(L.String("claudeColorLabel", lang), "gaugeColorHex", "#3B82F6"));
         stack.Children.Add(ColorRow(L.String("codexColorLabel", lang), "codexColorHex", "#22C55E"));
+        stack.Children.Add(ColorRow(L.String("ollamaColorLabel", lang), "ollamaColorHex", "#F97316"));
         stack.Children.Add(Toggle(L.String("gradientToggle", lang), settings.HasKey("gaugeUseGradient") ? settings.GetBool("gaugeUseGradient", true) : true,
             enabled => { settings.SetBool("gaugeUseGradient", enabled); _app.Monitor.Refresh(); }));
         stack.Children.Add(FooterNote(L.String("colorFooterNote", lang)));
@@ -391,6 +416,8 @@ public partial class SettingsWindow : Window
             v => settings.SetBool("showClaudeProvider", v)));
         stack.Children.Add(Toggle(L.String("showCodexProviderToggle", lang), settings.HasKey("showCodexProvider") ? settings.GetBool("showCodexProvider", true) : true,
             v => settings.SetBool("showCodexProvider", v)));
+        stack.Children.Add(Toggle(L.String("showOllamaProviderToggle", lang), settings.HasKey("showOllamaProvider") ? settings.GetBool("showOllamaProvider", true) : true,
+            v => settings.SetBool("showOllamaProvider", v)));
         stack.Children.Add(FooterNote(L.String("providersNote", lang)));
 
         stack.Children.Add(SectionHeader(L.String("displayItemsHeaderMac", lang)));
@@ -438,6 +465,7 @@ public partial class SettingsWindow : Window
         }));
         dailyFieldsPanel.Children.Add(NumberField(L.String("claudeDailyTargetPlaceholder", lang), settings.GetDouble("claudeDailyTokenTarget"), v => { settings.SetDouble("claudeDailyTokenTarget", v); _app.Monitor.Refresh(); }));
         dailyFieldsPanel.Children.Add(NumberField(L.String("codexDailyTargetPlaceholder", lang), settings.GetDouble("codexDailyTokenTarget"), v => { settings.SetDouble("codexDailyTokenTarget", v); _app.Monitor.Refresh(); }));
+        dailyFieldsPanel.Children.Add(NumberField(L.String("ollamaDailyTargetPlaceholder", lang), settings.GetDouble("ollamaDailyTokenTarget"), v => { settings.SetDouble("ollamaDailyTokenTarget", v); _app.Monitor.Refresh(); }));
         dailyFieldsPanel.Children.Add(FooterNote(L.String("dailyTargetNote", lang)));
         stack.Children.Add(dailyFieldsPanel);
 

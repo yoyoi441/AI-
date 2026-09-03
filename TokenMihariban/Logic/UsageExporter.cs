@@ -8,7 +8,7 @@ using TokenMihariban.Models;
 namespace TokenMihariban.Logic;
 
 /// <summary>
-/// One Claude Code API call or Codex CLI turn, flattened into a single exportable row.
+/// One Claude Code, Codex, or Ollama call, flattened into a single exportable row.
 /// Port of the Mac/iOS/Android `UsageExportRow` — kept as raw per-event rows (not
 /// pre-aggregated by day/model) so a spreadsheet or script on the receiving end can
 /// group/pivot however the user actually needs.
@@ -32,7 +32,7 @@ public sealed record UsageExportRow(
 /// </summary>
 public static class UsageExporter
 {
-    public static List<UsageExportRow> Rows(IReadOnlyList<UsageEvent> claudeEvents, IReadOnlyList<CodexUsageEvent> codexEvents, DateTime start, DateTime end)
+    public static List<UsageExportRow> Rows(IReadOnlyList<UsageEvent> claudeEvents, IReadOnlyList<CodexUsageEvent> codexEvents, IReadOnlyList<OllamaUsageEvent> ollamaEvents, DateTime start, DateTime end)
     {
         var claudeRows = claudeEvents
             .Where(e => e.Timestamp >= start && e.Timestamp <= end)
@@ -64,7 +64,22 @@ public static class UsageExporter
                 e.TotalTokens,
                 null));
 
-        return claudeRows.Concat(codexRows).OrderBy(r => r.Timestamp).ToList();
+        var ollamaRows = ollamaEvents
+            .Where(e => e.Timestamp >= start && e.Timestamp <= end)
+            .Select(e => new UsageExportRow(
+                e.Timestamp,
+                e.Source == OllamaUsageSource.Cloud ? "Ollama Cloud" : "Ollama Local",
+                e.Model,
+                "",
+                e.RequestId,
+                e.InputTokens,
+                e.OutputTokens,
+                0,
+                0,
+                e.TotalTokens,
+                e.Source == OllamaUsageSource.Cloud ? OllamaUsageComputer.EstimatedCloudCostUSD(e.Model, e.InputTokens, e.OutputTokens) : null));
+
+        return claudeRows.Concat(codexRows).Concat(ollamaRows).OrderBy(r => r.Timestamp).ToList();
     }
 
     public static string Csv(IReadOnlyList<UsageExportRow> rows)

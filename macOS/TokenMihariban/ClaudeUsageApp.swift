@@ -11,7 +11,7 @@ struct TokenMiharibanApp: App {
         MenuBarExtra {
             MenuBarContentView(monitor: monitor)
         } label: {
-            MenuBarLabel(snapshot: monitor.snapshot, codexSnapshot: monitor.codexSnapshot)
+            MenuBarLabel(snapshot: monitor.snapshot, codexSnapshot: monitor.codexSnapshot, ollamaSnapshot: monitor.ollamaSnapshot)
         }
         .menuBarExtraStyle(.window)
 
@@ -68,9 +68,11 @@ private struct ProviderIconSpec {
 private struct MenuBarLabel: View {
     let snapshot: UsageSnapshot
     let codexSnapshot: CodexSnapshot
+    let ollamaSnapshot: OllamaSnapshot
     @AppStorage("menuBarMetric") private var menuBarMetricRaw = GaugeMetric.timeRemaining.rawValue
     @AppStorage("showClaudeProvider") private var showClaudeProvider = true
     @AppStorage("showCodexProvider") private var showCodexProvider = true
+    @AppStorage("showOllamaProvider") private var showOllamaProvider = true
     private var metric: GaugeMetric { GaugeMetric(rawValue: menuBarMetricRaw) ?? .timeRemaining }
 
     private var specs: [ProviderIconSpec] {
@@ -103,7 +105,21 @@ private struct MenuBarLabel: View {
                 result.append(ProviderIconSpec(fraction: primary.fraction, color: color, centerText: "\(Int(primary.usedPercent.rounded()))"))
             }
         }
+        if showOllamaProvider, ollamaSnapshot.todayTotalTokens > 0 {
+            let color = Color(hex: ollamaSnapshot.colorHex) ?? .orange
+            if let fraction = ollamaSnapshot.targetFraction {
+                result.append(ProviderIconSpec(fraction: fraction, color: color, centerText: "\(Int((fraction * 100).rounded()))"))
+            } else {
+                result.append(ProviderIconSpec(fraction: 1, color: color, centerText: compactTokens(ollamaSnapshot.todayTotalTokens)))
+            }
+        }
         return result
+    }
+
+    private func compactTokens(_ count: Int) -> String {
+        if count >= 1_000_000 { return "\(count / 1_000_000)M" }
+        if count >= 1_000 { return "\(count / 1_000)K" }
+        return "\(count)"
     }
 
     var body: some View {

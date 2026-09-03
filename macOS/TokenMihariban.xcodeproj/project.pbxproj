@@ -43,6 +43,8 @@
 		E2507EF32103DB6F768FB4D3 /* FileSystemWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A8EEB53D0532242BED90F7B /* FileSystemWatcher.swift */; };
 		F9D8A7C1BA5D3735238CD2E9 /* ClaudeUsageMobileWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33759DC6542438922FDE250F /* ClaudeUsageMobileWidgetBundle.swift */; };
 		B10000000000000000000002 /* MacUpdateService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* MacUpdateService.swift */; };
+		B20000000000000000000002 /* OllamaProxyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* OllamaProxyService.swift */; };
+		B20000000000000000000004 /* OllamaUsageStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* OllamaUsageStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -125,6 +127,8 @@
 		F1909086D96F6C1F53E9E070 /* UsageTimelineProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageTimelineProvider.swift; sourceTree = "<group>"; };
 		FEC8403D75A66F2A581D2FC1 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		B10000000000000000000001 /* MacUpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacUpdateService.swift; sourceTree = "<group>"; };
+		B20000000000000000000001 /* OllamaProxyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OllamaProxyService.swift; sourceTree = "<group>"; };
+		B20000000000000000000003 /* OllamaUsageStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OllamaUsageStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -188,6 +192,8 @@
 				DF15BAC974094C89066D9380 /* Info.plist */,
 				7C531D27442D9484F76133C4 /* MenuBarContentView.swift */,
 				B10000000000000000000001 /* MacUpdateService.swift */,
+				B20000000000000000000001 /* OllamaProxyService.swift */,
+				B20000000000000000000003 /* OllamaUsageStore.swift */,
 				7B39C07272D6CFC02546B195 /* SettingsView.swift */,
 				CC924F91CE821B30ED4B1B64 /* UsageMonitor.swift */,
 			);
@@ -444,6 +450,8 @@
 				C9F670AFE7AACA0432BB496B /* MenuBarContentView.swift in Sources */,
 				48A0F58462E037839BEB3F64 /* SettingsView.swift in Sources */,
 				B10000000000000000000002 /* MacUpdateService.swift in Sources */,
+				B20000000000000000000002 /* OllamaProxyService.swift in Sources */,
+				B20000000000000000000004 /* OllamaUsageStore.swift in Sources */,
 				BD7D8A6658B124E1BF9B1A08 /* UsageMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -669,14 +677,14 @@
 				CODE_SIGN_ENTITLEMENTS = TokenMihariban/ClaudeUsage.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = TokenMihariban/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban;
 				PRODUCT_NAME = TokenMihariban;
 				SDKROOT = macosx;
@@ -691,14 +699,14 @@
 				CODE_SIGN_ENTITLEMENTS = TokenMihariban/ClaudeUsage.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_FILE = TokenMihariban/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban;
 				PRODUCT_NAME = TokenMihariban;
 				SDKROOT = macosx;
@@ -734,7 +742,7 @@
 				CODE_SIGN_ENTITLEMENTS = ClaudeUsageWidgetExtension/ClaudeUsageWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = 7RW5G46B22;
 				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = ClaudeUsageWidgetExtension/Info.plist;
@@ -743,7 +751,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban.WidgetExtension;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -779,7 +787,7 @@
 				CODE_SIGN_ENTITLEMENTS = ClaudeUsageWidgetExtension/ClaudeUsageWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = 7RW5G46B22;
 				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_FILE = ClaudeUsageWidgetExtension/Info.plist;
@@ -788,7 +796,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.1;
+				MARKETING_VERSION = 0.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban.WidgetExtension;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;

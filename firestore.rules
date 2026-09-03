@@ -82,6 +82,31 @@ service cloud.firestore {
         && validTokenCount(event.reasoningOutputTokens);
     }
 
+    function validOllamaEvent(groupId) {
+      let data = request.resource.data;
+      let event = data.event;
+      return data.keys().hasOnly(['deviceId', 'event'])
+        && data.deviceId == memberDeviceId(groupId)
+        && event.keys().hasOnly([
+          'timestamp', 'model', 'inputTokens', 'outputTokens',
+          'totalDurationNanoseconds', 'source', 'requestId'
+        ])
+        && event.timestamp is timestamp
+        && event.timestamp >= request.time - duration.value(10, 'd')
+        && event.timestamp <= request.time + duration.value(5, 'm')
+        && event.model is string
+        && event.model.size() <= 200
+        && validTokenCount(event.inputTokens)
+        && validTokenCount(event.outputTokens)
+        && event.totalDurationNanoseconds is int
+        && event.totalDurationNanoseconds >= 0
+        && event.totalDurationNanoseconds <= 1000000000000000000
+        && event.source in ['local', 'cloud']
+        && event.requestId is string
+        && event.requestId.size() >= 1
+        && event.requestId.size() <= 100;
+    }
+
     match /syncGroups/{groupId} {
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly(['ownerUid', 'createdAt', 'schemaVersion'])
@@ -113,6 +138,12 @@ service cloud.firestore {
         allow delete: if isMember(groupId) && resource.data.deviceId == memberDeviceId(groupId);
       }
 
+      match /ollamaEvents/{eventId} {
+        allow read: if isMember(groupId);
+        allow create, update: if isMember(groupId) && validOllamaEvent(groupId);
+        allow delete: if isMember(groupId) && resource.data.deviceId == memberDeviceId(groupId);
+      }
+
       match /codexRateLimits/{documentId} {
         allow read: if isMember(groupId);
         allow create, update: if isMember(groupId)
@@ -125,8 +156,8 @@ service cloud.firestore {
         allow read: if isMember(groupId);
         allow create, update: if isMember(groupId)
           && request.resource.data.keys().hasOnly([
-            'gaugeColorHex', 'codexColorHex', 'gaugeUseGradient', 'gaugeStyle',
-            'showClaudeProvider', 'showCodexProvider', 'showTimeGauge',
+            'gaugeColorHex', 'codexColorHex', 'ollamaColorHex', 'gaugeUseGradient', 'gaugeStyle',
+            'showClaudeProvider', 'showCodexProvider', 'showOllamaProvider', 'showTimeGauge',
             'showTokenGauge', 'showTodaySummary', 'showEstimatedCost',
             'showModelBreakdown', 'showProjectBreakdown', 'showHourlyChart',
             'showLast7Days'

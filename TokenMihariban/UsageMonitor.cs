@@ -8,6 +8,7 @@ using System.Windows.Forms;
 using TokenMihariban.Logic;
 using TokenMihariban.Models;
 using TokenMihariban.Notifications;
+using TokenMihariban.Ollama;
 using TokenMihariban.Parsing;
 using TokenMihariban.Sync;
 
@@ -26,6 +27,11 @@ public sealed class UsageMonitor : IDisposable
 {
     public UsageSnapshot Snapshot { get; private set; } = UsageSnapshot.Empty;
     public CodexSnapshot CodexSnapshot { get; private set; } = Models.CodexSnapshot.Empty;
+    public OllamaSnapshot OllamaSnapshot { get; private set; } = Models.OllamaSnapshot.Empty;
+    public OllamaProxyState OllamaProxyState => _ollamaProxy.State;
+    public string? OllamaProxyError => _ollamaProxy.ErrorMessage;
+    public string OllamaLocalProxyUrl => $"http://127.0.0.1:{OllamaProxyService.LocalPort}";
+    public string OllamaCloudProxyUrl => $"http://127.0.0.1:{OllamaProxyService.CloudPort}";
     public event EventHandler? SnapshotUpdated;
 
     private double _refreshIntervalSeconds = 60;
@@ -61,6 +67,10 @@ public sealed class UsageMonitor : IDisposable
     private readonly FirestoreSyncService _syncService;
     private IReadOnlyList<UsageEvent> _remoteClaudeEvents = Array.Empty<UsageEvent>();
     private IReadOnlyList<CodexUsageEvent> _remoteCodexEvents = Array.Empty<CodexUsageEvent>();
+    private IReadOnlyList<OllamaUsageEvent> _remoteOllamaEvents = Array.Empty<OllamaUsageEvent>();
+    private readonly OllamaUsageStore _ollamaStore = new();
+    private readonly OllamaProxyService _ollamaProxy = new();
+    private readonly List<OllamaUsageEvent> _allOllamaEvents = new();
 
     public bool IsDeviceSyncAvailable => _syncService.IsAvailable;
     public string? SyncPairingCode => _syncService.PairingCode;
@@ -76,13 +86,41 @@ public sealed class UsageMonitor : IDisposable
 
         _syncService = new FirestoreSyncService();
         _syncService.RemoteDataChanged += OnRemoteDataChanged;
+        _allOllamaEvents.AddRange(_ollamaStore.Load());
+        _ollamaProxy.UsageCaptured += OnOllamaUsageCaptured;
+        _ollamaProxy.StateChanged += OnOllamaProxyStateChanged;
 
         Refresh();
         RestartFallbackTimer();
         StartFileWatchers();
+        var ollamaEnabled = !AppSettings.Shared.HasKey("ollamaMonitoringEnabled") || AppSettings.Shared.GetBool("ollamaMonitoringEnabled", true);
+        if (ollamaEnabled) _ollamaProxy.Start();
     }
 
     public void AttachTrayIcon(NotifyIcon trayIcon) => _trayIcon = trayIcon;
+
+    public void SetOllamaMonitoringEnabled(bool enabled)
+    {
+        AppSettings.Shared.SetBool("ollamaMonitoringEnabled", enabled);
+        if (enabled) _ollamaProxy.Start();
+        else _ollamaProxy.Stop();
+        SnapshotUpdated?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnOllamaUsageCaptured(object? sender, OllamaUsageEvent usage)
+    {
+        lock (_refreshLock)
+        {
+            if (_allOllamaEvents.Any(x => x.RequestId == usage.RequestId)) return;
+            _allOllamaEvents.Add(usage);
+            _ollamaStore.Append(usage);
+            ComputeOllamaSnapshot();
+            CheckUsageAlerts();
+        }
+        SnapshotUpdated?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnOllamaProxyStateChanged(object? sender, EventArgs e) => SnapshotUpdated?.Invoke(this, EventArgs.Empty);
 
     private void StartFileWatchers()
     {
@@ -130,16 +168,19 @@ public sealed class UsageMonitor : IDisposable
     {
         UsageEvent[] localClaude;
         CodexUsageEvent[] localCodex;
+        OllamaUsageEvent[] localOllama;
         lock (_refreshLock)
         {
             RefreshClaude();
             RefreshCodex();
+            ComputeOllamaSnapshot();
             CheckUsageAlerts();
             localClaude = _allEvents.ToArray();
             localCodex = _allCodexEvents.ToArray();
+            localOllama = _allOllamaEvents.ToArray();
         }
         SnapshotUpdated?.Invoke(this, EventArgs.Empty);
-        _syncService.UpdateLocalEvents(localClaude, localCodex);
+        _syncService.UpdateLocalEvents(localClaude, localCodex, localOllama);
     }
 
     public Task<string?> CreateSyncPairingCodeAsync() => _syncService.CreatePairingCodeAsync();
@@ -156,8 +197,10 @@ public sealed class UsageMonitor : IDisposable
         {
             _remoteClaudeEvents = data.ClaudeEvents;
             _remoteCodexEvents = data.CodexEvents;
+            _remoteOllamaEvents = data.OllamaEvents;
             ComputeClaudeSnapshot();
             ComputeCodexSnapshot();
+            ComputeOllamaSnapshot();
         }
         SnapshotUpdated?.Invoke(this, EventArgs.Empty);
     }
@@ -173,6 +216,7 @@ public sealed class UsageMonitor : IDisposable
         return UsageExporter.Rows(
             _allEvents,
             _allCodexEvents,
+            _allOllamaEvents,
             start,
             end
         );
@@ -195,6 +239,7 @@ public sealed class UsageMonitor : IDisposable
         {
             CheckTarget(Snapshot.TodayTotalTokens, settings.GetDouble("claudeDailyTokenTarget"), "Claude Code", "daily", dateKey, lang);
             CheckTarget(CodexSnapshot.TodayTotalTokens, settings.GetDouble("codexDailyTokenTarget"), "Codex", "daily", dateKey, lang);
+            CheckTarget(OllamaSnapshot.TodayTotalTokens, settings.GetDouble("ollamaDailyTokenTarget"), "Ollama", "daily", dateKey, lang);
         }
         if (settings.GetBool("windowTargetEnabled", false))
         {
@@ -322,6 +367,16 @@ public sealed class UsageMonitor : IDisposable
         CodexSnapshot = SnapshotComputer.ComputeCodexSnapshot(_allCodexEvents.Concat(_remoteCodexEvents).ToArray(), _latestCodexPrimaryWindow, _latestCodexSecondaryWindow, colorHex);
     }
 
+    private void ComputeOllamaSnapshot()
+    {
+        var settings = AppSettings.Shared;
+        var dailyTarget = settings.GetBool("dailyTargetEnabled", false) ? settings.GetDouble("ollamaDailyTokenTarget") : 0;
+        OllamaSnapshot = OllamaUsageComputer.Compute(
+            _allOllamaEvents.Concat(_remoteOllamaEvents).ToArray(),
+            dailyTarget,
+            settings.GetString("ollamaColorHex") ?? Models.OllamaSnapshot.Empty.ColorHex);
+    }
+
     private static List<string> FindLogFiles(string directory)
     {
         if (!Directory.Exists(directory)) return new List<string>();
@@ -341,6 +396,9 @@ public sealed class UsageMonitor : IDisposable
         _debounceTimer?.Dispose();
         _claudeWatcher?.Dispose();
         _codexWatcher?.Dispose();
+        _ollamaProxy.UsageCaptured -= OnOllamaUsageCaptured;
+        _ollamaProxy.StateChanged -= OnOllamaProxyStateChanged;
+        _ollamaProxy.Dispose();
         _syncService.RemoteDataChanged -= OnRemoteDataChanged;
         _syncService.Dispose();
     }

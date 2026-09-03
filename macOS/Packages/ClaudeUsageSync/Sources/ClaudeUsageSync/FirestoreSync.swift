@@ -256,6 +256,44 @@ public enum FirestoreSync {
         }
     }
 
+    // MARK: - Ollama events
+
+    private struct OllamaEventDocument: Codable {
+        let deviceId: String
+        let event: OllamaUsageEvent
+    }
+
+    public static func uploadOllamaEvents(_ events: [OllamaUsageEvent], syncId: String, deviceId: String, completion: @escaping (Bool) -> Void = { _ in }) {
+        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId), !events.isEmpty else { completion(false); return }
+        let batch = db!.batch()
+        for event in events {
+            let docId = documentId(deviceId: deviceId, sessionId: event.requestId, timestamp: event.timestamp)
+            let ref = group.collection("ollamaEvents").document(docId)
+            guard let data = try? Firestore.Encoder().encode(OllamaEventDocument(deviceId: deviceId, event: event)) else { continue }
+            batch.setData(data, forDocument: ref)
+        }
+        batch.commit { error in
+            if let error { print("FirestoreSync: Ollama upload failed: \(error)") }
+            completion(error == nil)
+        }
+    }
+
+    public static func observeOllamaEvents(syncId: String, excludingDeviceId: String, onChange: @escaping ([OllamaUsageEvent]) -> Void) -> ListenerRegistration? {
+        groupRef(syncId: syncId)?.collection("ollamaEvents")
+            .whereField("event.timestamp", isGreaterThanOrEqualTo: Timestamp(date: recentEventsCutoff))
+            .addSnapshotListener { snapshot, error in
+            guard let snapshot else {
+                if let error { print("FirestoreSync: Ollama listen failed: \(error)") }
+                return
+            }
+            let events = snapshot.documents.compactMap { doc -> OllamaUsageEvent? in
+                guard let decoded = try? doc.data(as: OllamaEventDocument.self), decoded.deviceId != excludingDeviceId else { return nil }
+                return decoded.event
+            }
+            onChange(events)
+        }
+    }
+
     // MARK: - Codex rate limits (already account-wide/official — just relay whichever
     // device saw the newest reading, no merging needed)
 
@@ -311,10 +349,12 @@ public enum FirestoreSync {
     public struct AppearanceSettingsDocument: Codable, Equatable, Sendable {
         public let gaugeColorHex: String
         public let codexColorHex: String
+        public let ollamaColorHex: String
         public let gaugeUseGradient: Bool
         public let gaugeStyle: String
         public let showClaudeProvider: Bool
         public let showCodexProvider: Bool
+        public let showOllamaProvider: Bool
         public let showTimeGauge: Bool
         public let showTokenGauge: Bool
         public let showTodaySummary: Bool
@@ -324,13 +364,44 @@ public enum FirestoreSync {
         public let showHourlyChart: Bool
         public let showLast7Days: Bool
 
+        private enum CodingKeys: String, CodingKey {
+            case gaugeColorHex, codexColorHex, ollamaColorHex, gaugeUseGradient, gaugeStyle
+            case showClaudeProvider, showCodexProvider, showOllamaProvider
+            case showTimeGauge, showTokenGauge, showTodaySummary, showEstimatedCost
+            case showModelBreakdown, showProjectBreakdown, showHourlyChart, showLast7Days
+        }
+
+        /// Older paired devices wrote settings before Ollama existed. Keep those documents
+        /// readable and apply the new provider defaults until the next settings upload.
+        public init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            gaugeColorHex = try values.decode(String.self, forKey: .gaugeColorHex)
+            codexColorHex = try values.decode(String.self, forKey: .codexColorHex)
+            ollamaColorHex = try values.decodeIfPresent(String.self, forKey: .ollamaColorHex) ?? "#F97316"
+            gaugeUseGradient = try values.decode(Bool.self, forKey: .gaugeUseGradient)
+            gaugeStyle = try values.decode(String.self, forKey: .gaugeStyle)
+            showClaudeProvider = try values.decode(Bool.self, forKey: .showClaudeProvider)
+            showCodexProvider = try values.decode(Bool.self, forKey: .showCodexProvider)
+            showOllamaProvider = try values.decodeIfPresent(Bool.self, forKey: .showOllamaProvider) ?? true
+            showTimeGauge = try values.decode(Bool.self, forKey: .showTimeGauge)
+            showTokenGauge = try values.decode(Bool.self, forKey: .showTokenGauge)
+            showTodaySummary = try values.decode(Bool.self, forKey: .showTodaySummary)
+            showEstimatedCost = try values.decode(Bool.self, forKey: .showEstimatedCost)
+            showModelBreakdown = try values.decode(Bool.self, forKey: .showModelBreakdown)
+            showProjectBreakdown = try values.decode(Bool.self, forKey: .showProjectBreakdown)
+            showHourlyChart = try values.decode(Bool.self, forKey: .showHourlyChart)
+            showLast7Days = try values.decode(Bool.self, forKey: .showLast7Days)
+        }
+
         public init(
             gaugeColorHex: String,
             codexColorHex: String,
+            ollamaColorHex: String,
             gaugeUseGradient: Bool,
             gaugeStyle: String,
             showClaudeProvider: Bool,
             showCodexProvider: Bool,
+            showOllamaProvider: Bool,
             showTimeGauge: Bool,
             showTokenGauge: Bool,
             showTodaySummary: Bool,
@@ -342,10 +413,12 @@ public enum FirestoreSync {
         ) {
             self.gaugeColorHex = gaugeColorHex
             self.codexColorHex = codexColorHex
+            self.ollamaColorHex = ollamaColorHex
             self.gaugeUseGradient = gaugeUseGradient
             self.gaugeStyle = gaugeStyle
             self.showClaudeProvider = showClaudeProvider
             self.showCodexProvider = showCodexProvider
+            self.showOllamaProvider = showOllamaProvider
             self.showTimeGauge = showTimeGauge
             self.showTokenGauge = showTokenGauge
             self.showTodaySummary = showTodaySummary

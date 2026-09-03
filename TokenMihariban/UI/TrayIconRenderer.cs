@@ -44,7 +44,7 @@ internal static class TrayIconRenderer
 
     private sealed record ProviderSpec(double Fraction, Color Color, string CenterText);
 
-    public static Icon Render(UsageSnapshot snapshot, CodexSnapshot codexSnapshot, GaugeMetric metric, GaugeDisplayStyle style, bool showClaude, bool showCodex, bool isDarkTaskbar)
+    public static Icon Render(UsageSnapshot snapshot, CodexSnapshot codexSnapshot, OllamaSnapshot ollamaSnapshot, GaugeMetric metric, GaugeDisplayStyle style, bool showClaude, bool showCodex, bool showOllama, bool isDarkTaskbar)
     {
         var specs = new List<ProviderSpec>();
 
@@ -77,6 +77,12 @@ internal static class TrayIconRenderer
                 ? ((int)Math.Round(fraction * 100)).ToString()
                 : ((int)Math.Round(primary.UsedPercent)).ToString();
             specs.Add(new ProviderSpec(fraction, color, centerText));
+        }
+
+        if (showOllama && ollamaSnapshot.TargetFraction is { } ollamaFraction)
+        {
+            var color = ParseColor(ollamaSnapshot.ColorHex, Color.DarkOrange);
+            specs.Add(new ProviderSpec(ollamaFraction, color, ((int)Math.Round(ollamaFraction * 100)).ToString()));
         }
 
         const int canvasSize = 32;

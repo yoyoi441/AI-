@@ -1,14 +1,15 @@
 # トークン見張り番
 
-Claude CodeとCodexが端末内に保存したローカルログを読み取り、トークン使用量を
+Claude CodeとCodexのローカルログ、およびOllamaのAPI応答メタデータからトークン使用量を
 見やすく表示する常駐アプリです。Windows版とmacOS版を同じGitHub Releaseから
 配布します。
 
 ## 主な機能
 
-- Claude Code / Codexの本日の合計トークン数
+- Claude Code / Codex / Ollamaの本日の合計トークン数
 - タスクトレイ／メニューバー上の使用率表示
-- ClaudeとCodexがある場合は、両方のリングを表示
+- サービスごとのリング表示（Ollamaは全モデルを1リングに集約）
+- Ollama Local / Ollama Cloudの自動区分と、Cloud利用料の参考概算
 - モデル別・プロジェクト別の内訳
 - 時間帯別グラフと直近7日間の合計
 - 使用量の目安と通知
@@ -32,12 +33,28 @@ Claude CodeとCodexが端末内に保存したローカルログを読み取り�
 
 - Windows 10 / 11（64ビット）
 - macOS 14以降（Apple Silicon / Intel）
-- Claude CodeまたはCodex CLIを同じ端末で使用していること
+- Claude Code、Codex CLI、またはOllamaを同じ端末で使用していること
 
 読み取るログは次の通りです。
 
 - `~/.claude/projects`
 - `~/.codex/sessions`
+
+## Ollama監視
+
+Ollamaは累積履歴APIを提供していないため、本アプリが端末内だけで動かす監視URLを
+Ollamaクライアントの接続先に指定します。設定画面の「Ollama監視」でオン／オフとURLを確認できます。
+
+- `http://127.0.0.1:11435`: 通常のローカルOllamaと、ローカルデーモン経由の`:cloud`モデル
+- `http://127.0.0.1:11436`: `https://ollama.com`へ直接接続するAPIクライアント
+
+たとえばOllama CLIを監視する場合、OllamaサーバーではなくCLI側のプロセスだけに
+`OLLAMA_HOST=http://127.0.0.1:11435`を設定します。APIクライアントではベースURLを同じURLへ
+変更してください。Cloud用の認証ヘッダーはそのまま転送されます。
+
+表示はローカル・クラウドを合わせた1つのOllamaリングですが、内部履歴にはモデル名と接続先区分を
+保持します。将来、設定からモデル別リングを選べるようにしても過去データを利用できます。
+プロンプトと応答本文は保存せず、完了応答に含まれるモデル名、トークン数、処理時間だけを記録します。
 
 ## アプリ内更新
 
@@ -48,15 +65,15 @@ GitHubが公開するSHA-256ダイジェストがある場合は、インスト�
 ## 端末間同期
 
 設定の「端末間同期」で16文字のペアリングコードを共有すると、直近9日分の
-Claude Code / Codex使用イベントをWindows版とmacOS版で合算できます。コードは
+Claude Code / Codex / Ollama使用イベントをWindows版とmacOS版で合算できます。コードは
 約80ビットのランダム値で、表示時は`ABCD-EFGH-JKLM-NPQR`のように区切られます。
 
 同期を有効にした端末はFirebase Authenticationへ匿名でサインインします。Firestoreでは
 ペアリングコードを知って参加処理を完了した端末ごとにメンバー情報を作成し、Security Rulesで
 メンバー以外の読取り・書込み、同期グループの一覧取得、不正なトークン値を拒否します。
 
-有効化後に同期対象となる項目は日時、モデル、トークン数、セッションID、プロジェクトパスです。
-Anthropic・OpenAIのログイン情報やAPIキーは同期対象にしません。
+有効化後に同期対象となる項目は日時、モデル、トークン数、接続先区分、セッション等の識別子です。
+プロンプト、応答本文、Anthropic・OpenAI・Ollamaのログイン情報やAPIキーは同期対象にしません。
 
 ## Windows版の開発
 

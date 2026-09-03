@@ -123,6 +123,31 @@ test("参加端末は自端末IDの妥当なイベントだけを書ける", asy
   }));
 });
 
+test("参加端末は本文を含まない妥当なOllama使用量だけを書ける", async () => {
+  const owner = testEnv.authenticatedContext("owner").firestore();
+  const validEvent = {
+    deviceId: "owner-device-0001",
+    event: {
+      timestamp: Timestamp.now(),
+      model: "gpt-oss:20b",
+      inputTokens: 120,
+      outputTokens: 45,
+      totalDurationNanoseconds: 123456789,
+      source: "local",
+      requestId: "ollama-request-1",
+    },
+  };
+  await assertSucceeds(setDoc(doc(owner, "syncGroups", groupId, "ollamaEvents", "event-1"), validEvent));
+  await assertFails(setDoc(doc(owner, "syncGroups", groupId, "ollamaEvents", "with-prompt"), {
+    ...validEvent,
+    event: { ...validEvent.event, prompt: "同期してはいけない本文" },
+  }));
+  await assertFails(setDoc(doc(owner, "syncGroups", groupId, "ollamaEvents", "invalid-source"), {
+    ...validEvent,
+    event: { ...validEvent.event, source: "other" },
+  }));
+});
+
 test("端末は自分のメンバー登録を削除して同期解除できる", async () => {
   const owner = testEnv.authenticatedContext("owner").firestore();
   const memberRef = doc(owner, "syncGroups", groupId, "members", "owner");

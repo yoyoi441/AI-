@@ -17,10 +17,12 @@ struct MenuBarContentView: View, LocalizedView {
     @AppStorage("showLast7Days") private var showLast7Days = true
     @AppStorage("showClaudeProvider") private var showClaudeProvider = true
     @AppStorage("showCodexProvider") private var showCodexProvider = true
+    @AppStorage("showOllamaProvider") private var showOllamaProvider = true
     @AppStorage("dailyTargetEnabled") private var dailyTargetEnabled = false
     @AppStorage("windowTargetEnabled") private var windowTargetEnabled = false
     @AppStorage("claudeDailyTokenTarget") private var claudeDailyTokenTarget: Double = 0
     @AppStorage("codexDailyTokenTarget") private var codexDailyTokenTarget: Double = 0
+    @AppStorage("ollamaDailyTokenTarget") private var ollamaDailyTokenTarget: Double = 0
     @AppStorage("claudeWindowTokenTarget") private var claudeWindowTokenTarget: Double = 0
     @AppStorage("codexWindowTokenTarget") private var codexWindowTokenTarget: Double = 0
     @AppStorage("customWindowStartMinute") private var customWindowStartMinute: Int = DailyTimeWindow.default.startMinute
@@ -33,6 +35,7 @@ struct MenuBarContentView: View, LocalizedView {
     private var gaugeColor: Color { Color(hex: monitor.snapshot.appearance.colorHex) ?? .blue }
     private var gaugeUseGradient: Bool { monitor.snapshot.appearance.useGradient }
     private var codexColor: Color { Color(hex: monitor.codexSnapshot.colorHex) ?? .green }
+    private var ollamaColor: Color { Color(hex: monitor.ollamaSnapshot.colorHex) ?? .orange }
 
     var body: some View {
         ScrollView {
@@ -106,6 +109,31 @@ struct MenuBarContentView: View, LocalizedView {
                     if showLast7Days {
                         Divider()
                         Text(t("last7DaysFormat", formattedTokens(monitor.codexSnapshot.last7DaysTotalTokens)))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if showOllamaProvider && (showClaudeProvider || showCodexProvider) {
+                    Divider().padding(.vertical, 4)
+                }
+
+                if showOllamaProvider {
+                    header("Ollama", systemImage: "server.rack")
+
+                    Divider()
+                    ollamaGaugeSection
+
+                    Divider()
+                    ollamaTodaySection
+
+                    if showHourlyChart && !monitor.ollamaSnapshot.hourlyTokensToday.isEmpty {
+                        chartSection(points: monitor.ollamaSnapshot.hourlyTokensToday, color: ollamaColor)
+                    }
+
+                    if showLast7Days {
+                        Divider()
+                        Text(t("last7DaysFormat", formattedTokens(monitor.ollamaSnapshot.last7DaysTotalTokens)))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -449,6 +477,65 @@ struct MenuBarContentView: View, LocalizedView {
         }
     }
 
+    // MARK: - Ollama
+
+    private var ollamaGaugeSection: some View {
+        let snapshot = monitor.ollamaSnapshot
+        let fraction = snapshot.targetFraction ?? 0
+        let color = fraction >= 1 ? Color.red : ollamaColor
+        let caption = snapshot.dailyTokenTarget > 0
+            ? "\(formattedTokens(snapshot.todayTotalTokens)) / \(formattedTokens(Int(snapshot.dailyTokenTarget)))"
+            : t("ollamaNoTargetCaption")
+        return VStack(alignment: .leading, spacing: 8) {
+            if gaugeStyle == .ring {
+                HStack(alignment: .top) {
+                    VStack(spacing: 4) {
+                        CircularGaugeRing(fraction: fraction, color: color, useGradient: gaugeUseGradient, lineWidth: 9) {
+                            Text(snapshot.targetFraction == nil ? compactTokens(snapshot.todayTotalTokens) : "\(Int((fraction * 100).rounded()))%")
+                                .font(.system(size: 15, weight: .bold))
+                        }
+                        .frame(width: 92, height: 92)
+                        Text(caption).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(t("dailyTargetGaugeCaption")).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(caption).font(.caption.monospacedDigit())
+                    }
+                    GaugeBar(fraction: fraction, color: color, useGradient: gaugeUseGradient)
+                }
+            }
+            if snapshot.todayTotalTokens == 0 {
+                Text(t("ollamaNoData")).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var ollamaTodaySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(t("today")).font(.subheadline.bold())
+            if showTodaySummary {
+                Text(t("totalTokensFormat", formattedTokens(monitor.ollamaSnapshot.todayTotalTokens)))
+                Text(t("ollamaLocalFormat", formattedTokens(monitor.ollamaSnapshot.todayLocalTokens)))
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(t("ollamaCloudFormat", formattedTokens(monitor.ollamaSnapshot.todayCloudTokens)))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if showEstimatedCost && monitor.ollamaSnapshot.todayCloudTokens > 0 {
+                Text(t("estimatedCostFormat", String(format: "$%.4f", monitor.ollamaSnapshot.todayCloudEstimatedCostUSD)))
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(t("ollamaCloudCostNote")).font(.caption2).foregroundStyle(.secondary)
+                if monitor.ollamaSnapshot.hasUnpricedCloudModelToday {
+                    Text(t("unpricedModelWarning")).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     private var footer: some View {
         HStack {
             Button(t("refresh")) { monitor.refresh() }
@@ -469,6 +556,12 @@ struct MenuBarContentView: View, LocalizedView {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+    }
+
+    private func compactTokens(_ count: Int) -> String {
+        if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
+        if count >= 1_000 { return String(format: "%.1fK", Double(count) / 1_000) }
+        return "\(count)"
     }
 
     private func formattedCost(_ cost: Double) -> String {

@@ -32,6 +32,8 @@ import ClaudeUsageSync
 final class UsageMonitor: ObservableObject {
     @Published private(set) var snapshot: UsageSnapshot = SnapshotStore.readSnapshot() ?? .empty
     @Published private(set) var codexSnapshot: CodexSnapshot = SnapshotStore.readCodexSnapshot() ?? .empty
+    @Published private(set) var ollamaSnapshot: OllamaSnapshot = .empty
+    @Published private(set) var ollamaProxyState: OllamaProxyState = .stopped
     @Published var refreshIntervalSeconds: Double = 60 {
         didSet { restartFallbackTimer() }
     }
@@ -53,14 +55,20 @@ final class UsageMonitor: ObservableObject {
     private var latestCodexSecondaryWindow: CodexRateLimitWindow?
     private var latestCodexWindowEventTimestamp: Date?
 
+    private let ollamaStore = OllamaUsageStore()
+    private var ollamaProxy: OllamaProxyService?
+    private var allOllamaEvents: [OllamaUsageEvent] = []
+
     // Events other devices in the same sync group have uploaded (never includes this
     // device's own events — those are already in allEvents/allCodexEvents from the local
     // parse). Combined with the local pool at compute time so every device shows the
     // same account-wide total.
     private var remoteClaudeEvents: [UsageEvent] = []
     private var remoteCodexEvents: [CodexUsageEvent] = []
+    private var remoteOllamaEvents: [OllamaUsageEvent] = []
     private var claudeListener: ListenerRegistration?
     private var codexEventsListener: ListenerRegistration?
+    private var ollamaEventsListener: ListenerRegistration?
     private var codexRateLimitsListener: ListenerRegistration?
 
     private let projectsDirectory: URL
@@ -72,6 +80,7 @@ final class UsageMonitor: ObservableObject {
             .appendingPathComponent(".claude/projects", isDirectory: true)
         codexSessionsDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions", isDirectory: true)
+        allOllamaEvents = ollamaStore.load()
 
         FirestoreSync.configureIfNeeded()
 
@@ -90,7 +99,46 @@ final class UsageMonitor: ObservableObject {
         codexWatcher = FileSystemWatcher(rootDirectory: codexSessionsDirectory) { [weak self] in
             Task { @MainActor in self?.scheduleDebouncedRefresh() }
         }
+        let ollamaEnabled = UserDefaults.standard.object(forKey: "ollamaMonitoringEnabled") == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: "ollamaMonitoringEnabled")
+        if ollamaEnabled { startOllamaMonitoring() }
         startCloudSyncIfPaired()
+    }
+
+    var ollamaLocalProxyURL: String { "http://127.0.0.1:\(OllamaProxyService.localPort)" }
+    var ollamaCloudProxyURL: String { "http://127.0.0.1:\(OllamaProxyService.cloudPort)" }
+
+    func setOllamaMonitoringEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "ollamaMonitoringEnabled")
+        if enabled { startOllamaMonitoring() }
+        else {
+            ollamaProxy?.stop()
+            ollamaProxy = nil
+            ollamaProxyState = .stopped
+        }
+    }
+
+    private func startOllamaMonitoring() {
+        guard ollamaProxy == nil else { return }
+        let proxy = OllamaProxyService(
+            eventHandler: { [weak self] event in
+                Task { @MainActor in self?.recordOllamaUsage(event) }
+            },
+            stateHandler: { [weak self] state in
+                Task { @MainActor in self?.ollamaProxyState = state }
+            }
+        )
+        ollamaProxy = proxy
+        proxy.start()
+    }
+
+    private func recordOllamaUsage(_ event: OllamaUsageEvent) {
+        guard !allOllamaEvents.contains(where: { $0.requestId == event.requestId }) else { return }
+        allOllamaEvents.append(event)
+        ollamaStore.append(event)
+        refreshOllama()
+        checkUsageAlerts()
     }
 
     private var refreshDebounceWorkItem: DispatchWorkItem?
@@ -123,6 +171,7 @@ final class UsageMonitor: ObservableObject {
         UsageExporter.rows(
             claudeEvents: allEvents + remoteClaudeEvents,
             codexEvents: allCodexEvents + remoteCodexEvents,
+            ollamaEvents: allOllamaEvents + remoteOllamaEvents,
             from: start,
             to: end
         )
@@ -133,9 +182,11 @@ final class UsageMonitor: ObservableObject {
     func syncPairingChanged() {
         claudeListener?.remove()
         codexEventsListener?.remove()
+        ollamaEventsListener?.remove()
         codexRateLimitsListener?.remove()
         remoteClaudeEvents = []
         remoteCodexEvents = []
+        remoteOllamaEvents = []
         startCloudSyncIfPaired()
         refresh()
     }
@@ -155,6 +206,7 @@ final class UsageMonitor: ObservableObject {
     private func attachCloudSyncListeners(syncId: String) {
         claudeListener?.remove()
         codexEventsListener?.remove()
+        ollamaEventsListener?.remove()
         codexRateLimitsListener?.remove()
 
         claudeListener = FirestoreSync.observeClaudeEvents(syncId: syncId, excludingDeviceId: deviceId) { [weak self] events in
@@ -169,6 +221,12 @@ final class UsageMonitor: ObservableObject {
                 self?.remoteCodexEvents = events
                 self?.refreshCodex()
                 WidgetCenter.shared.reloadAllTimelines()
+            }
+        }
+        ollamaEventsListener = FirestoreSync.observeOllamaEvents(syncId: syncId, excludingDeviceId: deviceId) { [weak self] events in
+            Task { @MainActor in
+                self?.remoteOllamaEvents = events
+                self?.refreshOllama()
             }
         }
         codexRateLimitsListener = FirestoreSync.observeCodexRateLimits(syncId: syncId) { [weak self] primary, secondary, eventTimestamp in
@@ -201,10 +259,12 @@ final class UsageMonitor: ObservableObject {
         let doc = FirestoreSync.AppearanceSettingsDocument(
             gaugeColorHex: defaults.string(forKey: "gaugeColorHex") ?? GaugeAppearance.default.colorHex,
             codexColorHex: defaults.string(forKey: "codexColorHex") ?? CodexSnapshot.empty.colorHex,
+            ollamaColorHex: defaults.string(forKey: "ollamaColorHex") ?? OllamaSnapshot.empty.colorHex,
             gaugeUseGradient: flag("gaugeUseGradient", default: GaugeAppearance.default.useGradient),
             gaugeStyle: defaults.string(forKey: "gaugeStyle") ?? GaugeAppearance.default.style.rawValue,
             showClaudeProvider: flag("showClaudeProvider", default: true),
             showCodexProvider: flag("showCodexProvider", default: true),
+            showOllamaProvider: flag("showOllamaProvider", default: true),
             showTimeGauge: flag("showTimeGauge", default: true),
             showTokenGauge: flag("showTokenGauge", default: true),
             showTodaySummary: flag("showTodaySummary", default: true),
@@ -227,6 +287,7 @@ final class UsageMonitor: ObservableObject {
     func refresh() {
         refreshClaude()
         refreshCodex()
+        refreshOllama()
         checkUsageAlerts()
         WidgetCenter.shared.reloadAllTimelines()
     }
@@ -251,6 +312,7 @@ final class UsageMonitor: ObservableObject {
         if defaults.bool(forKey: "dailyTargetEnabled") {
             checkTarget(current: snapshot.todayTotalTokens, target: defaults.double(forKey: "claudeDailyTokenTarget"), providerName: "Claude Code", kind: "daily", dateKey: dateKey, lang: lang)
             checkTarget(current: codexSnapshot.todayTotalTokens, target: defaults.double(forKey: "codexDailyTokenTarget"), providerName: "Codex", kind: "daily", dateKey: dateKey, lang: lang)
+            checkTarget(current: ollamaSnapshot.todayTotalTokens, target: defaults.double(forKey: "ollamaDailyTokenTarget"), providerName: "Ollama", kind: "daily", dateKey: dateKey, lang: lang)
         }
         if defaults.bool(forKey: "windowTargetEnabled") {
             checkTarget(current: snapshot.hourlyTokensToday.tokensInWindow(window), target: defaults.double(forKey: "claudeWindowTokenTarget"), providerName: "Claude Code", kind: "window", dateKey: dateKey, lang: lang)
@@ -422,6 +484,21 @@ final class UsageMonitor: ObservableObject {
         )
         codexSnapshot = computed
         try? SnapshotStore.writeCodexSnapshot(computed)
+    }
+
+    private func refreshOllama() {
+        let defaults = UserDefaults.standard
+        let dailyTarget = defaults.bool(forKey: "dailyTargetEnabled")
+            ? defaults.double(forKey: "ollamaDailyTokenTarget")
+            : 0
+        uploadNewEventsToCloud(allOllamaEvents, watermarkKeyPrefix: "lastUploadedOllamaEventAt", timestamp: \.timestamp) { events, syncId, deviceId, completion in
+            FirestoreSync.uploadOllamaEvents(events, syncId: syncId, deviceId: deviceId, completion: completion)
+        }
+        ollamaSnapshot = OllamaUsageComputer.compute(
+            events: allOllamaEvents + remoteOllamaEvents,
+            dailyTokenTarget: dailyTarget,
+            colorHex: defaults.string(forKey: "ollamaColorHex") ?? OllamaSnapshot.empty.colorHex
+        )
     }
 
     private func findLogFiles(in directory: URL, extension fileExtension: String) -> [URL] {
