@@ -125,6 +125,12 @@ public partial class SettingsWindow : Window
 
         stack.Children.Add(SectionHeader(L.String("updatesHeader", lang)));
         stack.Children.Add(new TextBlock { Text = L.String("currentVersionFormat", lang, UpdateService.CurrentVersion.ToString(3)), Opacity = 0.75 });
+        var automaticUpdateCheckEnabled = settings.HasKey("automaticUpdateCheckEnabled")
+            ? settings.GetBool("automaticUpdateCheckEnabled", true)
+            : true;
+        stack.Children.Add(Toggle(L.String("automaticUpdateCheck", lang), automaticUpdateCheckEnabled,
+            enabled => settings.SetBool("automaticUpdateCheckEnabled", enabled)));
+        stack.Children.Add(FooterNote(L.String("automaticUpdateCheckNote", lang)));
         var updateStatus = new TextBlock { Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap, Opacity = 0.75 };
         var updateButton = new Button { Content = L.String("checkForUpdates", lang), Padding = new Thickness(10, 4, 10, 4), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 0) };
         updateButton.Click += async (_, _) =>

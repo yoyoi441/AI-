@@ -39,6 +39,7 @@ private struct GeneralSettingsTab: View, LocalizedView {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var isCheckingForUpdate = false
     @State private var updateStatus = ""
+    @AppStorage("automaticUpdateCheckEnabled") private var automaticUpdateCheckEnabled = true
     @AppStorage("notificationsEnabled") private var notificationsEnabled = true
     @AppStorage(AppLanguagePreference.storageKey) private var appLanguageRaw = AppLanguage.japanese.rawValue
     var lang: AppLanguage { AppLanguagePreference.resolve(from: appLanguageRaw) }
@@ -81,6 +82,10 @@ private struct GeneralSettingsTab: View, LocalizedView {
 
             Section {
                 Text(t("currentVersionFormat", MacUpdateService.currentVersion))
+                    .foregroundStyle(.secondary)
+                Toggle(t("automaticUpdateCheck"), isOn: $automaticUpdateCheckEnabled)
+                Text(t("automaticUpdateCheckNote"))
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                 Button(t("checkForUpdates")) {
                     Task { await checkForUpdates() }

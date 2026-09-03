@@ -72,6 +72,8 @@ public static class L
         ["rescanHeader"] = ("データの再読み込み", "Data Refresh"),
         ["updatesHeader"] = ("更新", "Updates"),
         ["currentVersionFormat"] = ("現在のバージョン: {0}", "Current version: {0}"),
+        ["automaticUpdateCheck"] = ("起動時に自動で更新を確認する", "Automatically Check for Updates at Launch"),
+        ["automaticUpdateCheckNote"] = ("新しいバージョンが見つかった場合は、インストール前に確認します。", "When a new version is found, the app asks before installing it."),
         ["checkForUpdates"] = ("更新を確認", "Check for Updates"),
         ["checkingForUpdates"] = ("更新を確認しています…", "Checking for updates…"),
         ["upToDate"] = ("最新版を使用しています", "You're using the latest version"),

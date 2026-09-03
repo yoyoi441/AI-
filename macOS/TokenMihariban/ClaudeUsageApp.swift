@@ -4,6 +4,7 @@ import ClaudeUsageCore
 
 @main
 struct TokenMiharibanApp: App {
+    @NSApplicationDelegateAdaptor(TokenMiharibanAppDelegate.self) private var appDelegate
     @StateObject private var monitor = UsageMonitor()
 
     var body: some Scene {
@@ -16,6 +17,41 @@ struct TokenMiharibanApp: App {
 
         Settings {
             SettingsView(monitor: monitor)
+        }
+    }
+}
+
+final class TokenMiharibanAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            await checkForUpdatesAtLaunch()
+        }
+    }
+
+    @MainActor
+    private func checkForUpdatesAtLaunch() async {
+        let defaults = UserDefaults.standard
+        let enabled = defaults.object(forKey: "automaticUpdateCheckEnabled") == nil
+            ? true
+            : defaults.bool(forKey: "automaticUpdateCheckEnabled")
+        guard enabled, let release = try? await MacUpdateService.checkForUpdate() else { return }
+
+        let lang = AppLanguagePreference.resolve(from: defaults.string(forKey: AppLanguagePreference.storageKey))
+        let alert = NSAlert()
+        alert.messageText = L.string("updatesHeader", lang: lang)
+        alert.informativeText = L.string("updateAvailableFormat", lang: lang, args: [release.version])
+        alert.addButton(withTitle: L.string("installUpdate", lang: lang))
+        alert.addButton(withTitle: L.string("cancel", lang: lang))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try await MacUpdateService.downloadAndInstall(release)
+        } catch {
+            let errorAlert = NSAlert()
+            errorAlert.messageText = L.string("updatesHeader", lang: lang)
+            errorAlert.informativeText = L.string("updateFailedFormat", lang: lang, args: [error.localizedDescription])
+            errorAlert.runModal()
         }
     }
 }

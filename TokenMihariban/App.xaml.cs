@@ -1,10 +1,12 @@
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Forms;
 using TokenMihariban.Models;
 using TokenMihariban.Sync;
 using TokenMihariban.UI;
+using TokenMihariban.Updates;
 using Application = System.Windows.Application;
 using MouseButtons = System.Windows.Forms.MouseButtons;
 
@@ -62,6 +64,52 @@ public partial class App : Application
 
         _monitor.SnapshotUpdated += (_, _) => Dispatcher.Invoke(OnSnapshotUpdated);
         OnSnapshotUpdated();
+        _ = CheckForUpdatesAtLaunchAsync();
+    }
+
+    private async Task CheckForUpdatesAtLaunchAsync()
+    {
+        var settings = AppSettings.Shared;
+        var enabled = settings.HasKey("automaticUpdateCheckEnabled")
+            ? settings.GetBool("automaticUpdateCheckEnabled", true)
+            : true;
+        if (!enabled) return;
+
+        await Task.Delay(TimeSpan.FromSeconds(5));
+        AppRelease? release;
+        try
+        {
+            release = await UpdateService.CheckAsync();
+        }
+        catch
+        {
+            // Automatic checks stay silent when offline. Manual checks still show errors.
+            return;
+        }
+        if (release is null) return;
+
+        var lang = CurrentLanguage();
+        var answer = System.Windows.MessageBox.Show(
+            L.String("updateAvailableFormat", lang, release.Version.ToString(3)) + "\n\n" + L.String("updateRestartNote", lang),
+            L.String("updateDialogTitle", lang),
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Information);
+        if (answer != MessageBoxResult.Yes) return;
+
+        try
+        {
+            var installer = await UpdateService.DownloadInstallerAsync(release);
+            UpdateService.StartInstaller(installer);
+            ShutdownApp();
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(
+                L.String("updateFailedFormat", lang, ex.Message),
+                L.String("updateDialogTitle", lang),
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
     }
 
     private void BuildContextMenu()
