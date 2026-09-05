@@ -28,8 +28,17 @@ private final class ForegroundNotificationPresenter: NSObject, UNUserNotificatio
 @MainActor
 public enum UsageNotifier {
     public static func requestAuthorizationIfNeeded() {
-        UNUserNotificationCenter.current().delegate = ForegroundNotificationPresenter.shared
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = ForegroundNotificationPresenter.shared
+
+        // The completion-handler API invokes its closure on a private notification
+        // queue.  A closure created inside this @MainActor type inherits main-actor
+        // isolation under Swift 6, so macOS 26 traps when that private queue calls it.
+        // The async API performs the executor hop correctly and avoids crashing the
+        // whole menu-bar app immediately after launch.
+        Task {
+            _ = try? await center.requestAuthorization(options: [.alert, .sound])
+        }
     }
 
     /// Posts a notification the first time `dedupeKey` is seen, and never again for
