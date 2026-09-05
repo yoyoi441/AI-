@@ -124,7 +124,7 @@ public enum L {
         "menuBarMetricTime": ("残り時間", "Time Remaining"),
         "menuBarMetricTokenUsage": ("トークン使用率", "Token Usage"),
         "menuBarMetricHeader": ("メニューバーアイコン", "Menu Bar Icon"),
-        "menuBarMetricNote": ("メニューバーの円グラフ・バーが何を表しているかを選べます。「残り時間」は現在のブロック(Claude)・期間(Codex)がリセットされるまでの経過割合、「トークン使用率」はトークン使用量の割合です。", "Choose what the menu bar's ring/bar represents. \"Time Remaining\" is how far through the current block (Claude) or window (Codex) you are until it resets. \"Token Usage\" is the share of tokens used."),
+        "menuBarMetricNote": ("メニューバーの円グラフ・バーが何を表しているかを選べます。ポップアップと同じ値にする場合は「トークン使用率」を選択してください。「残り時間」は現在のブロック(Claude)・期間(Codex)がリセットされるまでの経過割合です。", "Choose what the menu bar's ring/bar represents. Select \"Token Usage\" to match the value shown in the popup. \"Time Remaining\" is how far through the current block (Claude) or window (Codex) you are until it resets."),
         "widgetContentHeader": ("ウィジェット(小)", "Widget (Small)"),
         "widgetProviderPickerLabel": ("表示するサービス", "Service to Show"),
         "widgetMetricPickerLabel": ("表示内容", "Shows"),

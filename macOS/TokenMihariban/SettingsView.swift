@@ -194,7 +194,7 @@ private struct AppearanceSettingsTab: View, LocalizedView {
     @AppStorage("gaugeStyle") private var gaugeStyle: GaugeDisplayStyle = GaugeAppearance.default.style
     @AppStorage("codexColorHex") private var codexColorHex: String = CodexSnapshot.empty.colorHex
     @AppStorage("ollamaColorHex") private var ollamaColorHex: String = OllamaSnapshot.empty.colorHex
-    @AppStorage("menuBarMetric") private var menuBarMetricRaw = GaugeMetric.timeRemaining.rawValue
+    @AppStorage("menuBarMetric") private var menuBarMetricRaw = GaugeMetric.tokenUsage.rawValue
     @AppStorage(AppLanguagePreference.storageKey) private var appLanguageRaw = AppLanguage.japanese.rawValue
     var lang: AppLanguage { AppLanguagePreference.resolve(from: appLanguageRaw) }
 

@@ -69,11 +69,11 @@ private struct MenuBarLabel: View {
     let snapshot: UsageSnapshot
     let codexSnapshot: CodexSnapshot
     let ollamaSnapshot: OllamaSnapshot
-    @AppStorage("menuBarMetric") private var menuBarMetricRaw = GaugeMetric.timeRemaining.rawValue
+    @AppStorage("menuBarMetric") private var menuBarMetricRaw = GaugeMetric.tokenUsage.rawValue
     @AppStorage("showClaudeProvider") private var showClaudeProvider = true
     @AppStorage("showCodexProvider") private var showCodexProvider = true
     @AppStorage("showOllamaProvider") private var showOllamaProvider = true
-    private var metric: GaugeMetric { GaugeMetric(rawValue: menuBarMetricRaw) ?? .timeRemaining }
+    private var metric: GaugeMetric { GaugeMetric(rawValue: menuBarMetricRaw) ?? .tokenUsage }
 
     private var specs: [ProviderIconSpec] {
         var result: [ProviderIconSpec] = []
