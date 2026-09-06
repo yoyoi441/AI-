@@ -1,27 +1,75 @@
 --- Storage/AuthKeychainServices.swift
 +++ Storage/AuthKeychainServices.swift
-@@ -230,7 +230,9 @@
-       kSecAttrAccount as String: kAccountPrefix + key,
-       kSecAttrService as String: service,
-     ]
+@@ -107,0 +108,3 @@
++    #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
++      return try unsignedBuildData(forKey: key)
++    #else
+@@ -125,0 +129 @@
++    #endif
+@@ -128,0 +133,3 @@
++    #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
++      try setUnsignedBuildData(data, forKey: key)
++    #else
+@@ -129,0 +137 @@
++    #endif
+@@ -132,0 +141,3 @@
++    #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
++      try removeUnsignedBuildData(forKey: key)
++    #else
+@@ -137,0 +149 @@
++    #endif
+@@ -138,0 +151,20 @@
++
++  #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
++    /// Ad-hoc signatures change their designated requirement on every update, so a
++    /// Keychain item written by one unsigned build prompts again when the next build
++    /// reads it. Persist only Firebase's anonymous auth archive in a private app-support
++    /// file until the distributed app has a stable Developer ID signature.
++    private func unsignedBuildStorageURL(forKey key: String) throws -> URL {
++      let manager = FileManager.default
++      let directory = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
++        .appendingPathComponent("TokenMihariban/FirebaseAuth", isDirectory: true)
++      try manager.createDirectory(
++        at: directory,
++        withIntermediateDirectories: true,
++        attributes: [.posixPermissions: 0o700]
++      )
++      try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
++      let identifier = Data("\(service)\u{0}\(key)".utf8).base64EncodedString()
++        .replacingOccurrences(of: "/", with: "_")
++      return directory.appendingPathComponent(identifier).appendingPathExtension("auth")
++    }
+@@ -139,0 +172,20 @@
++    private func unsignedBuildData(forKey key: String) throws -> Data? {
++      let url = try unsignedBuildStorageURL(forKey: key)
++      guard FileManager.default.fileExists(atPath: url.path) else { return nil }
++      return try Data(contentsOf: url)
++    }
++
++    private func setUnsignedBuildData(_ data: Data, forKey key: String) throws {
++      let url = try unsignedBuildStorageURL(forKey: key)
++      try data.write(to: url, options: .atomic)
++      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
++    }
++
++    private func removeUnsignedBuildData(forKey key: String) throws {
++      let url = try unsignedBuildStorageURL(forKey: key)
++      if FileManager.default.fileExists(atPath: url.path) {
++        try FileManager.default.removeItem(at: url)
++      }
++    }
++  #endif
++
+@@ -233 +285,3 @@
 -    query[kSecUseDataProtectionKeychain as String] = true
 +    #if !os(macOS) || !TOKEN_MIHARIBAN_UNSIGNED_BUILD
 +      query[kSecUseDataProtectionKeychain as String] = true
 +    #endif
-     return query
-   }
-
 --- Auth/Auth.swift
 +++ Auth/Auth.swift
-@@ -1851,7 +1851,11 @@
-     if let serviceName = gKeychainServiceNameForAppName[appName] {
-       return serviceName
-     } else {
+@@ -1852,0 +1853,3 @@
 +      #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
 +        let serviceName = "firebase_auth_\(app.options.googleAppID)_token_mihariban_unsigned"
 +      #else
-       let serviceName = "firebase_auth_\(app.options.googleAppID)"
+@@ -1853,0 +1857 @@
 +      #endif
-       gKeychainServiceNameForAppName[appName] = serviceName
-       return serviceName
-     }

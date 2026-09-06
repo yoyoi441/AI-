@@ -84,7 +84,9 @@ public enum FirestoreSync {
     }
 
     /// Authenticates this installation and creates/joins the group membership checked by
-    /// Firestore rules. FirebaseAuth persists the anonymous account in the Keychain.
+    /// Firestore rules. Signed builds use FirebaseAuth's normal Keychain persistence;
+    /// unsigned preview builds use a private app-support file so ad-hoc signature changes
+    /// do not cause a Keychain prompt after every update.
     public static func activatePairing(
         syncId: String,
         deviceId: String,

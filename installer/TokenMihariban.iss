@@ -17,7 +17,7 @@
 
 #define MyAppName "トークン見張り番"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.6"
+  #define MyAppVersion "0.4.7"
 #endif
 #define MyAppExeName "TokenMihariban.exe"
 #define MyPublishDir "..\TokenMihariban\bin\Release\net8.0-windows\win-x64\publish"
