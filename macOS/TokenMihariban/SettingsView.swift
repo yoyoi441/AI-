@@ -448,6 +448,7 @@ private struct SyncSettingsTab: View, LocalizedView {
     @State private var justCopied = false
     @State private var pairingBusy = false
     @State private var pairingStatusKey: String?
+    @State private var pairingErrorDetail: String?
     @AppStorage(AppLanguagePreference.storageKey) private var appLanguageRaw = AppLanguage.japanese.rawValue
     var lang: AppLanguage { AppLanguagePreference.resolve(from: appLanguageRaw) }
 
@@ -501,6 +502,7 @@ private struct SyncSettingsTab: View, LocalizedView {
                         let code = SyncPairing.generateNewSyncId()
                         pairingBusy = true
                         pairingStatusKey = "pairingConnecting"
+                        pairingErrorDetail = nil
                         FirestoreSync.activatePairing(syncId: code, deviceId: SyncPairing.deviceId, createGroup: true) { result in
                             DispatchQueue.main.async {
                                 pairingBusy = false
@@ -510,8 +512,9 @@ private struct SyncSettingsTab: View, LocalizedView {
                                     syncId = code
                                     pairingStatusKey = nil
                                     monitor.syncPairingChanged()
-                                case .failure:
+                                case .failure(let error):
                                     pairingStatusKey = "pairingFailed"
+                                    pairingErrorDetail = error.localizedDescription
                                 }
                             }
                         }
@@ -542,6 +545,12 @@ private struct SyncSettingsTab: View, LocalizedView {
                     Section {
                         Text(t(pairingStatusKey))
                             .foregroundStyle(pairingStatusKey == "pairingFailed" || pairingStatusKey == "invalidPairingCode" ? .orange : .secondary)
+                        if let pairingErrorDetail {
+                            Text(pairingErrorDetail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
                     }
                 }
             }
@@ -565,6 +574,7 @@ private struct SyncSettingsTab: View, LocalizedView {
         }
         pairingBusy = true
         pairingStatusKey = "pairingConnecting"
+        pairingErrorDetail = nil
         FirestoreSync.activatePairing(syncId: code, deviceId: SyncPairing.deviceId, createGroup: false) { result in
             DispatchQueue.main.async {
                 pairingBusy = false
@@ -575,8 +585,9 @@ private struct SyncSettingsTab: View, LocalizedView {
                     enteredCode = ""
                     pairingStatusKey = nil
                     monitor.syncPairingChanged()
-                case .failure:
+                case .failure(let error):
                     pairingStatusKey = "pairingFailed"
+                    pairingErrorDetail = error.localizedDescription
                 }
             }
         }

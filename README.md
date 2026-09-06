@@ -93,6 +93,11 @@ Firebase同期を有効にする開発ビルドでは、
 `macOS/TokenMihariban/GoogleService-Info.plist`を追加してください。このファイルは
 Git管理対象外です。Swift Packageから`FirebaseAuth`と`FirebaseFirestore`を使用します。
 
+未署名の配布ビルドでは、Firebase Authが匿名認証情報をmacOSキーチェーンへ保存できるよう、
+パッケージ解決後に`macOS/scripts/patch-firebase-auth-for-unsigned-build.sh`を実行し、
+`TOKEN_MIHARIBAN_UNSIGNED_BUILD`条件を有効にします。認証情報は平文ファイルではなく、
+引き続きキーチェーンへ保存されます。正式署名へ移行した後はこの互換条件を外します。
+
 ## Firebase同期のセットアップ
 
 1. Firebase ConsoleのAuthenticationで「匿名」プロバイダを有効にします。

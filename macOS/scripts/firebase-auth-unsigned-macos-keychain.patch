@@ -1,0 +1,13 @@
+--- AuthKeychainServices.swift
++++ AuthKeychainServices.swift
+@@ -230,7 +230,9 @@
+       kSecAttrAccount as String: kAccountPrefix + key,
+       kSecAttrService as String: service,
+     ]
+-    query[kSecUseDataProtectionKeychain as String] = true
++    #if !os(macOS) || !TOKEN_MIHARIBAN_UNSIGNED_BUILD
++      query[kSecUseDataProtectionKeychain as String] = true
++    #endif
+     return query
+   }
+ 
