@@ -50,15 +50,14 @@ public enum FirestoreSync {
     public static func configureIfNeeded() {
         guard isAvailable, !didConfigure else { return }
         FirebaseApp.configure()
-        // The SDK's default persistent (leveldb-backed) cache size is *unlimited* — for a
-        // sync group that has been accumulating events across devices for months, that
-        // cache (plus the in-memory document snapshots rebuilt from it on every listener
-        // fire) was observed driving this menu bar app's RSS well past 1GB. Bounding it
-        // makes the SDK evict old cached documents instead of keeping every one it has
-        // ever seen; the app only ever displays today/7-day rollups, so a small cache is
-        // enough — Firestore just re-fetches from the server on the rare cache miss.
+        // This menu bar app only needs live cross-device sync. A persistent LevelDB cache
+        // can outlive unsigned app replacements and then fail during Firestore startup
+        // because of an old lock or incompatible cache state. Memory cache avoids that
+        // startup crash and also prevents historical sync data from growing on disk.
+        // Local Claude/Codex/Ollama logs remain the durable source of this device's data;
+        // remote usage is fetched again after relaunch.
         let settings = Firestore.firestore().settings
-        settings.cacheSettings = PersistentCacheSettings(sizeBytes: 40 * 1024 * 1024 as NSNumber)
+        settings.cacheSettings = MemoryCacheSettings()
         Firestore.firestore().settings = settings
         didConfigure = true
     }

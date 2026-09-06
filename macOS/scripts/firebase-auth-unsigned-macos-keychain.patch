@@ -1,5 +1,5 @@
---- AuthKeychainServices.swift
-+++ AuthKeychainServices.swift
+--- Storage/AuthKeychainServices.swift
++++ Storage/AuthKeychainServices.swift
 @@ -230,7 +230,9 @@
        kSecAttrAccount as String: kAccountPrefix + key,
        kSecAttrService as String: service,
@@ -10,4 +10,18 @@
 +    #endif
      return query
    }
- 
+
+--- Auth/Auth.swift
++++ Auth/Auth.swift
+@@ -1851,7 +1851,11 @@
+     if let serviceName = gKeychainServiceNameForAppName[appName] {
+       return serviceName
+     } else {
++      #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
++        let serviceName = "firebase_auth_\(app.options.googleAppID)_token_mihariban_unsigned"
++      #else
+       let serviceName = "firebase_auth_\(app.options.googleAppID)"
++      #endif
+       gKeychainServiceNameForAppName[appName] = serviceName
+       return serviceName
+     }
