@@ -684,7 +684,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban;
 				PRODUCT_NAME = TokenMihariban;
 				SDKROOT = macosx;
@@ -706,7 +706,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban;
 				PRODUCT_NAME = TokenMihariban;
 				SDKROOT = macosx;
@@ -751,7 +751,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban.WidgetExtension;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -796,7 +796,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.5;
+				MARKETING_VERSION = 0.4.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban.WidgetExtension;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;

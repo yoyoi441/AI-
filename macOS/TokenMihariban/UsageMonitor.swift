@@ -91,7 +91,14 @@ final class UsageMonitor: ObservableObject {
             UsageNotifier.requestAuthorizationIfNeeded()
         }
 
-        refresh()
+        // A first launch can have gigabytes of Claude/Codex history to parse. Running
+        // that work synchronously from init blocks SwiftUI before MenuBarExtra has a
+        // chance to install its status item, which makes the app look as though it
+        // never launched. Let the first run-loop turn create the menu-bar UI, then do
+        // the initial scan. Subsequent updates remain event-driven as before.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.refresh()
+        }
         restartFallbackTimer()
         watcher = FileSystemWatcher(rootDirectory: projectsDirectory) { [weak self] in
             Task { @MainActor in self?.scheduleDebouncedRefresh() }
