@@ -9,7 +9,11 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../ClaudeUsageCore"),
-        .package(url: "https://github.com/firebase/firebase-ios-sdk", from: "11.0.0")
+        // Firebase 11.9+ currently resolves grpc-binary 1.69.x. Its distributed
+        // macOS binary aborts on some Macs because the POSIX wakeup pipe support
+        // required by PollPoller is missing. 11.8 keeps the same Auth/Firestore
+        // APIs used here while resolving the stable grpc-binary 1.65.x line.
+        .package(url: "https://github.com/firebase/firebase-ios-sdk", exact: "11.8.0")
     ],
     targets: [
         .target(
@@ -17,8 +21,7 @@ let package = Package(
             dependencies: [
                 "ClaudeUsageCore",
                 .product(name: "FirebaseCore", package: "firebase-ios-sdk"),
-                .product(name: "FirebaseAuth", package: "firebase-ios-sdk"),
-                .product(name: "FirebaseFirestore", package: "firebase-ios-sdk")
+                .product(name: "FirebaseAuth", package: "firebase-ios-sdk")
             ]
         )
     ]

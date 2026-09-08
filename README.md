@@ -16,6 +16,7 @@ Claude CodeとCodexのローカルログ、およびOllamaのAPI応答メタデ�
 - CSV / JSON書き出し
 - アプリ内からGitHub Releasesの更新を確認・インストール
 - 任意の端末間同期（Firebase匿名認証・参加端末限定アクセス）
+- Ollama欄に他端末から同期した本日分トークン数を表示
 - 日本語・英語表示
 
 ## ダウンロード
@@ -91,12 +92,12 @@ dotnet run --project TokenMihariban/TokenMihariban.csproj
 Xcodeで`macOS/TokenMihariban.xcodeproj`を開き、`ClaudeUsage`ターゲットをビルドします。
 Firebase同期を有効にする開発ビルドでは、
 `macOS/TokenMihariban/GoogleService-Info.plist`を追加してください。このファイルは
-Git管理対象外です。Swift Packageから`FirebaseAuth`と`FirebaseFirestore`を使用します。
+Git管理対象外です。Swift Packageの`FirebaseAuth`とFirestore HTTPS APIを使用します。
 
-未署名の配布ビルドでは、Firebase Authが匿名認証情報をmacOSキーチェーンへ保存できるよう、
-パッケージ解決後に`macOS/scripts/patch-firebase-auth-for-unsigned-build.sh`を実行し、
-`TOKEN_MIHARIBAN_UNSIGNED_BUILD`条件を有効にします。認証情報は平文ファイルではなく、
-引き続き専用のキーチェーン領域へ保存されます。正式署名へ移行した後はこの互換条件を外します。
+未署名の配布ビルドでは、更新のたびにmacOSキーチェーンの許可を求められるのを避けるため、
+パッケージ解決後に`macOS/scripts/patch-firebase-auth-for-unsigned-build.sh`を実行します。
+この配布専用パッチを適用したFirebase Authは、匿名認証情報をアクセス権が現在のユーザーだけに
+制限したアプリ専用ファイルへ保存します。正式署名へ移行した後はこの互換条件を外し、Keychainへ戻します。
 
 ## Firebase同期のセットアップ
 
@@ -115,6 +116,6 @@ FirebaseのクライアントAPIキーはアプリ設定を識別する値で、
 
 同期を設定していない場合、Firebase Authenticationへの接続や利用状況の送信は行いません。
 Windowsの匿名認証更新トークンはWindows DPAPIで現在のユーザー用に暗号化し、macOSでは
-Firebase AuthがKeychainへ保存します。ローカルJSONLログは
+未署名プレビュー版はアクセス制限付きアプリ専用ファイル、正式署名版はFirebase AuthのKeychainへ保存します。ローカルJSONLログは
 集計のために読み取るだけで、元ファイルを書き換えません。アプリ内更新の確認時には
 GitHub APIへ現在のバージョン確認を行います。

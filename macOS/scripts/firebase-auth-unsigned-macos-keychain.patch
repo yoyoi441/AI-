@@ -1,26 +1,43 @@
 --- Storage/AuthKeychainServices.swift
 +++ Storage/AuthKeychainServices.swift
-@@ -107,0 +108,3 @@
-+    #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
+@@ -109,6 +109,9 @@
+   }
+
+   func data(forKey key: String) throws -> Data? {
++    #if os(macOS)
 +      return try unsignedBuildData(forKey: key)
 +    #else
-@@ -125,0 +129 @@
+     if let data = try getItemLegacy(query: genericPasswordQuery(key: key)) {
+       return data
+     }
+@@ -127,20 +130,69 @@
+       legacyEntryDeletedForKey.insert(key)
+       return nil
+     }
 +    #endif
-@@ -128,0 +133,3 @@
-+    #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
+   }
+
+   func setData(_ data: Data, forKey key: String) throws {
++    #if os(macOS)
 +      try setUnsignedBuildData(data, forKey: key)
 +    #else
-@@ -129,0 +137 @@
+     try setItemLegacy(data, withQuery: genericPasswordQuery(key: key))
 +    #endif
-@@ -132,0 +141,3 @@
-+    #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
+   }
+
+   func removeData(forKey key: String) throws {
++    #if os(macOS)
 +      try removeUnsignedBuildData(forKey: key)
 +    #else
-@@ -137,0 +149 @@
+     try removeItem(query: genericPasswordQuery(key: key))
+
+     // Legacy form item, if exists, also needs to be removed, otherwise it will be exposed when
+     // current form item is removed, leading to incorrect semantics.
+     deleteLegacyItem(key: key)
 +    #endif
-@@ -138,0 +151,20 @@
+   }
 +
-+  #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
++  #if os(macOS)
 +    /// Ad-hoc signatures change their designated requirement on every update, so a
 +    /// Keychain item written by one unsigned build prompts again when the next build
 +    /// reads it. Persist only Firebase's anonymous auth archive in a private app-support
@@ -39,7 +56,7 @@
 +        .replacingOccurrences(of: "/", with: "_")
 +      return directory.appendingPathComponent(identifier).appendingPathExtension("auth")
 +    }
-@@ -139,0 +172,20 @@
+
 +    private func unsignedBuildData(forKey key: String) throws -> Data? {
 +      let url = try unsignedBuildStorageURL(forKey: key)
 +      guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -60,16 +77,32 @@
 +    }
 +  #endif
 +
-@@ -233 +285,3 @@
+   // MARK: - Internal methods for non-sharing keychain operations
+
+   // TODO: This function can go away in favor of `getItem` if we can delete the legacy processing.
+@@ -234,7 +286,9 @@
+       kSecAttrAccount as String: kAccountPrefix + key,
+       kSecAttrService as String: service,
+     ]
 -    query[kSecUseDataProtectionKeychain as String] = true
-+    #if !os(macOS) || !TOKEN_MIHARIBAN_UNSIGNED_BUILD
++    #if !os(macOS)
 +      query[kSecUseDataProtectionKeychain as String] = true
 +    #endif
+     return query
+   }
+
 --- Auth/Auth.swift
 +++ Auth/Auth.swift
-@@ -1852,0 +1853,3 @@
-+      #if os(macOS) && TOKEN_MIHARIBAN_UNSIGNED_BUILD
+@@ -1832,7 +1832,11 @@
+     if let serviceName = gKeychainServiceNameForAppName[appName] {
+       return serviceName
+     } else {
+-      let serviceName = "firebase_auth_\(app.options.googleAppID)"
++      #if os(macOS)
 +        let serviceName = "firebase_auth_\(app.options.googleAppID)_token_mihariban_unsigned"
 +      #else
-@@ -1853,0 +1857 @@
++        let serviceName = "firebase_auth_\(app.options.googleAppID)"
 +      #endif
+       gKeychainServiceNameForAppName[appName] = serviceName
+       return serviceName
+     }

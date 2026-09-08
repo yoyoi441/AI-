@@ -28,6 +28,7 @@ public sealed class UsageMonitor : IDisposable
     public UsageSnapshot Snapshot { get; private set; } = UsageSnapshot.Empty;
     public CodexSnapshot CodexSnapshot { get; private set; } = Models.CodexSnapshot.Empty;
     public OllamaSnapshot OllamaSnapshot { get; private set; } = Models.OllamaSnapshot.Empty;
+    public long RemoteOllamaTodayTokens { get; private set; }
     public OllamaProxyState OllamaProxyState => _ollamaProxy.State;
     public string? OllamaProxyError => _ollamaProxy.ErrorMessage;
     public string OllamaLocalProxyUrl => $"http://127.0.0.1:{OllamaProxyService.LocalPort}";
@@ -371,10 +372,15 @@ public sealed class UsageMonitor : IDisposable
     {
         var settings = AppSettings.Shared;
         var dailyTarget = settings.GetBool("dailyTargetEnabled", false) ? settings.GetDouble("ollamaDailyTokenTarget") : 0;
+        var colorHex = settings.GetString("ollamaColorHex") ?? Models.OllamaSnapshot.Empty.ColorHex;
         OllamaSnapshot = OllamaUsageComputer.Compute(
             _allOllamaEvents.Concat(_remoteOllamaEvents).ToArray(),
             dailyTarget,
-            settings.GetString("ollamaColorHex") ?? Models.OllamaSnapshot.Empty.ColorHex);
+            colorHex);
+        RemoteOllamaTodayTokens = OllamaUsageComputer.Compute(
+            _remoteOllamaEvents.ToArray(),
+            0,
+            colorHex).TodayTotalTokens;
     }
 
     private static List<string> FindLogFiles(string directory)

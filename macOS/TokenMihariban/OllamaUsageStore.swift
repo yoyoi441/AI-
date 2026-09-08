@@ -36,3 +36,42 @@ final class OllamaUsageStore {
         } catch { }
     }
 }
+
+struct RemoteUsageCache: Codable {
+    let syncId: String
+    var claudeEvents: [UsageEvent]
+    var codexEvents: [CodexUsageEvent]
+    var ollamaEvents: [OllamaUsageEvent]
+}
+
+/// Persists the last successful cross-device result. Besides keeping remote totals
+/// visible while offline, this lets Firestore polling resume from the newest cached
+/// timestamp after relaunch instead of repeatedly reading the full nine-day history.
+final class RemoteUsageCacheStore {
+    private let fileURL: URL
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    init() {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("TokenMihariban", isDirectory: true)
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        fileURL = support.appendingPathComponent("remote-usage-cache.json")
+    }
+
+    func load(syncId: String) -> RemoteUsageCache? {
+        guard let data = try? Data(contentsOf: fileURL),
+              let cache = try? decoder.decode(RemoteUsageCache.self, from: data),
+              cache.syncId == syncId else { return nil }
+        return cache
+    }
+
+    func save(_ cache: RemoteUsageCache) {
+        guard let data = try? encoder.encode(cache) else { return }
+        try? data.write(to: fileURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+}

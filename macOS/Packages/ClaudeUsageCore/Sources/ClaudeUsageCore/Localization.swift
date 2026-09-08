@@ -53,6 +53,7 @@ public enum L {
         "ollamaNoTargetCaption": ("本日合計（目安未設定）", "Today (no target set)"),
         "ollamaNoData": ("まだOllamaの利用データがありません。設定の監視URLをOllama対応アプリに指定してください。", "No Ollama usage data yet. Set an Ollama-compatible client to one of the monitoring URLs shown in Settings."),
         "ollamaCloudCostNote": ("Ollama Cloudの公開単価による概算です。実際の請求額・残高ではありません。", "Estimated from Ollama Cloud's public token rates; this is not your billed amount or balance."),
+        "syncedFromOtherDevicesFormat": ("他端末から同期: %@ トークン", "Synced from other devices: %@ tokens"),
         "perDaysFormat": ("%d日ごと", "every %dd"),
         "perHoursFormat": ("%d時間ごと", "every %dh"),
         "refresh": ("更新", "Refresh"),

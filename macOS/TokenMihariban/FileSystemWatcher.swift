@@ -1,65 +1,65 @@
 import Foundation
+import CoreServices
 
-/// Watches `~/.claude/projects` (and everything under it) for changes using kqueue-based
-/// `DispatchSource` file descriptors, so new Claude Code activity is picked up within
-/// roughly a second — instead of waiting for the next timed poll.
+/// Recursively watches a log directory with one FSEvents stream.
 ///
-/// `DispatchSource` only reports events on the exact path it's watching, and a write to
-/// an existing file doesn't touch its parent directory's own change event. So this
-/// watches every directory (for new subdirectories/files appearing) and every `.jsonl`
-/// file (for appended lines) individually, growing the watch set as new entries appear.
+/// The previous kqueue implementation kept one file descriptor open for every folder
+/// and every JSONL file. A long-lived Claude/Codex installation can contain thousands
+/// of transcripts, which exhausted the per-process descriptor limit during launch and
+/// caused unrelated operations (network pipes and even system UI resources) to fail.
+/// FSEvents watches the whole subtree without holding each file open.
 final class FileSystemWatcher {
-    private var sources: [String: DispatchSourceFileSystemObject] = [:]
     private let queue = DispatchQueue(label: "com.yoyoi441.TokenMihariban.fswatch")
     private let onChange: () -> Void
+    private var stream: FSEventStreamRef?
+    private var pendingRefresh: DispatchWorkItem?
 
     init(rootDirectory: URL, onChange: @escaping () -> Void) {
         self.onChange = onChange
-        queue.async { [weak self] in
-            self?.watch(directory: rootDirectory)
+
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+        let flags = FSEventStreamCreateFlags(
+            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
+        )
+        stream = FSEventStreamCreate(
+            nil,
+            tokenMiharibanFSEventCallback,
+            &context,
+            [rootDirectory.path] as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.5,
+            flags
+        )
+        if let stream {
+            FSEventStreamSetDispatchQueue(stream, queue)
+            FSEventStreamStart(stream)
         }
+    }
+
+    fileprivate func fileSystemDidChange() {
+        pendingRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.onChange() }
+        pendingRefresh = work
+        queue.asyncAfter(deadline: .now() + 0.75, execute: work)
     }
 
     deinit {
-        sources.values.forEach { $0.cancel() }
-    }
-
-    private func watch(directory: URL) {
-        guard sources[directory.path] == nil else { return }
-        addWatcher(for: directory, eventMask: [.write]) { [weak self] in
-            self?.rescan(directory: directory)
-        }
-        rescan(directory: directory)
-    }
-
-    private func rescan(directory: URL) {
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        for entry in entries {
-            guard sources[entry.path] == nil else { continue }
-            let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-            if isDirectory {
-                watch(directory: entry)
-            } else if entry.pathExtension == "jsonl" {
-                addWatcher(for: entry, eventMask: [.write, .extend]) { [weak self] in
-                    self?.onChange()
-                }
-            }
+        pendingRefresh?.cancel()
+        if let stream {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
         }
     }
+}
 
-    private func addWatcher(for url: URL, eventMask: DispatchSource.FileSystemEvent, handler: @escaping () -> Void) {
-        let fd = open(url.path, O_EVTONLY)
-        guard fd >= 0 else { return }
-
-        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: eventMask, queue: queue)
-        source.setEventHandler(handler: handler)
-        source.setCancelHandler { close(fd) }
-        source.resume()
-        sources[url.path] = source
-    }
+private let tokenMiharibanFSEventCallback: FSEventStreamCallback = {
+    _, info, _, _, _, _ in
+    guard let info else { return }
+    Unmanaged<FileSystemWatcher>.fromOpaque(info).takeUnretainedValue().fileSystemDidChange()
 }

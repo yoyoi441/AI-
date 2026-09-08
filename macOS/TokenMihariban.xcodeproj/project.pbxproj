@@ -21,7 +21,6 @@
 		601326384DFA7413B9ADB905 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = 7081D8824A49FB38080296E1 /* FirebaseCore */; };
 		67256D5C2605CD4910667FD9 /* UsageTimelineProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6982FC12C9912E312491108 /* UsageTimelineProvider.swift */; };
 		7A2DFC1A09FB520E09CDE2BA /* ClaudeUsageWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 250064F1475E2F3077E3F4DA /* ClaudeUsageWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		895BCC283E65DCD111EAF1BA /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 79638A120E56426ADAE32459 /* FirebaseFirestore */; };
 		8F5AEF133868481F84DEBE8D /* ClaudeUsageCore in Frameworks */ = {isa = PBXBuildFile; productRef = BD3AF1B6D1589FCEF9F3B583 /* ClaudeUsageCore */; };
 		8F5CD230D9DA63B2C631802A /* UsageWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C727899CA6FCDC0DD97E1A26 /* UsageWidgetViews.swift */; };
 		90E3387FF2EEC3973EB024C1 /* ClaudeBlockActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8632F6957EB5D2D2E5E2F54C /* ClaudeBlockActivityAttributes.swift */; };
@@ -37,7 +36,6 @@
 		C1166AA87E58F7ECE39356C9 /* ClaudeUsageMobileWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E91B67648C22FA433E17CD5A /* ClaudeUsageMobileWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		C26FDCDAF80E2C768347D25D /* LiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ADDBD7B97FE92E166CECEAF /* LiveActivityManager.swift */; };
 		C9F670AFE7AACA0432BB496B /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C531D27442D9484F76133C4 /* MenuBarContentView.swift */; };
-		DD08AFD072218AFBE068DA19 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 7615D52D1D1A2A09936CAB9D /* FirebaseFirestore */; };
 		DF626A2D18DC85B6DDCD717A /* ClaudeUsageCore in Frameworks */ = {isa = PBXBuildFile; productRef = 2D8607144D010CFE791CF339 /* ClaudeUsageCore */; };
 		E142317023F657BDD54B0828 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = 6EE2BB3AA2F536B3E9B32194 /* FirebaseCore */; };
 		E2507EF32103DB6F768FB4D3 /* FileSystemWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A8EEB53D0532242BED90F7B /* FileSystemWatcher.swift */; };
@@ -139,7 +137,6 @@
 				05F38C21DEA227065F41EF31 /* ClaudeUsageCore in Frameworks */,
 				BE14CC8995B68A0F957B7A31 /* ClaudeUsageSync in Frameworks */,
 				E142317023F657BDD54B0828 /* FirebaseCore in Frameworks */,
-				895BCC283E65DCD111EAF1BA /* FirebaseFirestore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -150,7 +147,6 @@
 				BA5C619C6FA5569306640742 /* ClaudeUsageCore in Frameworks */,
 				2EBDDB19EEC8BDCBB236413F /* ClaudeUsageSync in Frameworks */,
 				601326384DFA7413B9ADB905 /* FirebaseCore in Frameworks */,
-				DD08AFD072218AFBE068DA19 /* FirebaseFirestore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -296,7 +292,6 @@
 				333A7ECD4895407B0933BD0C /* ClaudeUsageCore */,
 				1F32ABCA4F35424CEADB6238 /* ClaudeUsageSync */,
 				6EE2BB3AA2F536B3E9B32194 /* FirebaseCore */,
-				79638A120E56426ADAE32459 /* FirebaseFirestore */,
 			);
 			productName = ClaudeUsageMobile;
 			productReference = 69633F8AA95D970F986002D8 /* ClaudeUsageMobile.app */;
@@ -340,7 +335,6 @@
 				198F6F394C6729E552E1BF9A /* ClaudeUsageCore */,
 				32B05346DE930683EEDB0A8E /* ClaudeUsageSync */,
 				7081D8824A49FB38080296E1 /* FirebaseCore */,
-				7615D52D1D1A2A09936CAB9D /* FirebaseFirestore */,
 			);
 			productName = TokenMihariban;
 			productReference = 3DDB3669F215EFC0C1958C20 /* TokenMihariban.app */;
@@ -677,14 +671,14 @@
 				CODE_SIGN_ENTITLEMENTS = TokenMihariban/ClaudeUsage.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = TokenMihariban/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.7;
+				MARKETING_VERSION = 0.4.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban;
 				PRODUCT_NAME = TokenMihariban;
 				SDKROOT = macosx;
@@ -699,14 +693,14 @@
 				CODE_SIGN_ENTITLEMENTS = TokenMihariban/ClaudeUsage.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_FILE = TokenMihariban/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.7;
+				MARKETING_VERSION = 0.4.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban;
 				PRODUCT_NAME = TokenMihariban;
 				SDKROOT = macosx;
@@ -742,7 +736,7 @@
 				CODE_SIGN_ENTITLEMENTS = ClaudeUsageWidgetExtension/ClaudeUsageWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_TEAM = 7RW5G46B22;
 				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = ClaudeUsageWidgetExtension/Info.plist;
@@ -751,7 +745,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.7;
+				MARKETING_VERSION = 0.4.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban.WidgetExtension;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -787,7 +781,7 @@
 				CODE_SIGN_ENTITLEMENTS = ClaudeUsageWidgetExtension/ClaudeUsageWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_TEAM = 7RW5G46B22;
 				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_FILE = ClaudeUsageWidgetExtension/Info.plist;
@@ -796,7 +790,7 @@
 					"@executable_path/../Frameworks",
 					"@executable_path/../../../../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.7;
+				MARKETING_VERSION = 0.4.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMihariban.WidgetExtension;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -906,16 +900,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8C756F1EF13C657675403148 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseCore;
-		};
-		7615D52D1D1A2A09936CAB9D /* FirebaseFirestore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 8C756F1EF13C657675403148 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseFirestore;
-		};
-		79638A120E56426ADAE32459 /* FirebaseFirestore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 8C756F1EF13C657675403148 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseFirestore;
 		};
 		BD3AF1B6D1589FCEF9F3B583 /* ClaudeUsageCore */ = {
 			isa = XCSwiftPackageProductDependency;

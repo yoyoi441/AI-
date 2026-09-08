@@ -336,6 +336,8 @@ public partial class PopupWindow : Window
             summary.Children.Add(new TextBlock { Text = L.String("totalTokensFormat", lang, FormatTokens(snapshot.TodayTotalTokens)), FontSize = 12 });
             summary.Children.Add(new TextBlock { Text = L.String("ollamaLocalFormat", lang, FormatTokens(snapshot.TodayLocalTokens)), FontSize = 11, Opacity = 0.65 });
             summary.Children.Add(new TextBlock { Text = L.String("ollamaCloudFormat", lang, FormatTokens(snapshot.TodayCloudTokens)), FontSize = 11, Opacity = 0.65 });
+            if (_app.Monitor.RemoteOllamaTodayTokens > 0)
+                summary.Children.Add(new TextBlock { Text = L.String("syncedFromOtherDevicesFormat", lang, FormatTokens(_app.Monitor.RemoteOllamaTodayTokens)), FontSize = 11, Opacity = 0.65 });
             stack.Children.Add(summary);
         }
 

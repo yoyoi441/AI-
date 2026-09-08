@@ -524,6 +524,10 @@ struct MenuBarContentView: View, LocalizedView {
                     .font(.caption).foregroundStyle(.secondary)
                 Text(t("ollamaCloudFormat", formattedTokens(monitor.ollamaSnapshot.todayCloudTokens)))
                     .font(.caption).foregroundStyle(.secondary)
+                if monitor.remoteOllamaTodayTokens > 0 {
+                    Text(t("syncedFromOtherDevicesFormat", formattedTokens(monitor.remoteOllamaTodayTokens)))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             if showEstimatedCost && monitor.ollamaSnapshot.todayCloudTokens > 0 {
                 Text(t("estimatedCostFormat", String(format: "$%.4f", monitor.ollamaSnapshot.todayCloudEstimatedCostUSD)))

@@ -1,74 +1,133 @@
 import Foundation
 import FirebaseCore
 import FirebaseAuth
-import FirebaseFirestore
+import OSLog
 import ClaudeUsageCore
 
-/// Cross-device sync via Firebase Firestore. Every device that runs this app parses its
-/// own local logs and uploads new events here; every device (including ones with no
-/// local logs at all, like a phone) downloads everyone else's events and folds them into
-/// its own computation, so the 5-hour block / token totals reflect *all* devices, not
-/// just the one you're looking at.
-///
-/// No Anthropic/OpenAI credentials are involved — only token-usage counts.
-///
-/// Each installation receives a persistent anonymous Firebase identity. Devices join a
-/// group using a random 16-character capability code (~80 bits), and Firestore Security
-/// Rules restrict every group document to authenticated members.
-/// Firestore layout: `syncGroups/{syncId}/claudeEvents/{docId}`,
-/// `.../codexEvents/{docId}`, `.../codexRateLimits/latest`.
-///
-/// Shared as its own package (rather than living in `ClaudeUsageCore`) so widget
-/// extensions never link Firebase at all — only the two full apps (Mac, iOS) need this.
-///
-/// Deliberately *not* `@MainActor`: the Firestore SDK invokes listener/transaction/
-/// commit closures on its own internal dispatch queues, not the main thread. Marking
-/// this type (or its closures) MainActor-isolated caused a hard runtime crash
-/// (`dispatch_assert_queue_fail`) the moment a transaction closure ran off-queue.
-/// Callers that need to touch `@MainActor` state from these callbacks hop explicitly
-/// (`Task { @MainActor in ... }`), same as `UsageMonitor`/`MobileUsageMonitor` already do.
+private final class UncheckedBox<Value>: @unchecked Sendable {
+    let value: Value
+    init(_ value: Value) { self.value = value }
+}
+
+/// Keeps the last successful remote result in memory and advances the next query to
+/// the newest timestamp already seen. This avoids downloading the same multi-day
+/// history once per minute (and exhausting a shared Firestore project's read quota).
+private final class EventPollingState<Event>: @unchecked Sendable {
+    private let lock = NSLock()
+    private let key: (Event) -> String
+    private let timestamp: (Event) -> Date
+    private var events: [String: Event]
+    private var queryCutoff: Date
+
+    init(initial: [Event], fallbackCutoff: Date, key: @escaping (Event) -> String, timestamp: @escaping (Event) -> Date) {
+        self.key = key
+        self.timestamp = timestamp
+        var cached: [String: Event] = [:]
+        for event in initial { cached[key(event)] = event }
+        self.events = cached
+        self.queryCutoff = initial.map(timestamp).max() ?? fallbackCutoff
+    }
+
+    func cutoff() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return queryCutoff
+    }
+
+    func merge(_ incoming: [Event], oldestAllowed: Date) -> [Event] {
+        lock.lock()
+        defer { lock.unlock() }
+        events = events.filter { timestamp($0.value) >= oldestAllowed }
+        for event in incoming { events[key(event)] = event }
+        if let newest = incoming.map(timestamp).max(), newest > queryCutoff {
+            // Keep equality in the query so events sharing the newest timestamp are
+            // not lost; the dictionary above removes the one repeated boundary row.
+            queryCutoff = newest
+        }
+        return events.values.sorted { timestamp($0) < timestamp($1) }
+    }
+}
+
+/// A small removable polling handle with the same lifecycle semantics the app used for
+/// Firestore snapshot listeners. Firestore's REST API has no streaming listener, so the
+/// macOS menu-bar app refreshes remote state immediately and once per minute.
+public final class ListenerRegistration: @unchecked Sendable {
+    private let lock = NSLock()
+    private var timer: DispatchSourceTimer?
+
+    fileprivate init(interval: TimeInterval = 60, action: @escaping () -> Void) {
+        action()
+        let actionBox = UncheckedBox(action)
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + interval, repeating: interval)
+        timer.setEventHandler { actionBox.value() }
+        self.timer = timer
+        timer.resume()
+    }
+
+    public func remove() {
+        lock.lock()
+        let current = timer
+        timer = nil
+        lock.unlock()
+        current?.setEventHandler {}
+        current?.cancel()
+    }
+
+    deinit { remove() }
+}
+
+/// Cross-device usage synchronization over Firebase Authentication and the Firestore
+/// HTTPS REST API. The REST transport is intentional: the prebuilt gRPC framework used
+/// by recent Firebase Apple SDK releases aborts on some macOS installations when its
+/// POSIX wakeup-pipe support is unavailable. HTTPS keeps the same Firestore data model
+/// and security rules without linking or starting gRPC.
 public enum FirestoreSync {
-    // Only ever set from configureIfNeeded(), which every call site invokes before
-    // touching Firestore; safe as plain mutable state without actor isolation.
+    private static let logger = Logger(subsystem: "com.yoyoi441.TokenMihariban", category: "device-sync")
+    private struct Config {
+        let projectId: String
+        let apiKey: String
+    }
+
+    private struct Session {
+        let uid: String
+        let idToken: String
+    }
+
+    private enum SyncError: Error {
+        case invalidCode
+        case firebaseUnavailable
+        case authenticationFailed
+        case invalidResponse
+        case http(Int, String)
+    }
+
     nonisolated(unsafe) private static var didConfigure = false
     nonisolated(unsafe) private static var readyGroups = Set<String>()
     private static let readyGroupsLock = NSLock()
+    nonisolated(unsafe) private static let iso8601WithFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    nonisolated(unsafe) private static let iso8601 = ISO8601DateFormatter()
 
-    /// True once Firebase has a config to use. If the developer hasn't dropped in
-    /// `GoogleService-Info.plist` yet, every sync operation becomes a no-op — the app
-    /// keeps working exactly as it did before Firebase existed (local-only).
-    public static var isAvailable: Bool {
+    private static var config: Config? {
         guard let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
               let settings = NSDictionary(contentsOfFile: path) as? [String: Any],
               let projectId = settings["PROJECT_ID"] as? String,
               let apiKey = settings["API_KEY"] as? String,
               !projectId.isEmpty, projectId != "disabled",
-              !apiKey.isEmpty, apiKey != "disabled" else { return false }
-        return true
+              !apiKey.isEmpty, apiKey != "disabled" else { return nil }
+        return Config(projectId: projectId, apiKey: apiKey)
     }
+
+    public static var isAvailable: Bool { config != nil }
 
     public static func configureIfNeeded() {
         guard isAvailable, !didConfigure else { return }
-        FirebaseApp.configure()
-        // This menu bar app only needs live cross-device sync. A persistent LevelDB cache
-        // can outlive unsigned app replacements and then fail during Firestore startup
-        // because of an old lock or incompatible cache state. Memory cache avoids that
-        // startup crash and also prevents historical sync data from growing on disk.
-        // Local Claude/Codex/Ollama logs remain the durable source of this device's data;
-        // remote usage is fetched again after relaunch.
-        let settings = Firestore.firestore().settings
-        settings.cacheSettings = MemoryCacheSettings()
-        Firestore.firestore().settings = settings
+        if FirebaseApp.app() == nil { FirebaseApp.configure() }
         didConfigure = true
-    }
-
-    private static var db: Firestore? {
-        guard didConfigure else { return nil }
-        return Firestore.firestore()
-    }
-
-    private static func groupRef(syncId: String) -> DocumentReference? {
-        db?.collection("syncGroups").document(syncId)
     }
 
     public static func isReady(syncId: String) -> Bool {
@@ -83,10 +142,8 @@ public enum FirestoreSync {
         readyGroupsLock.unlock()
     }
 
-    /// Authenticates this installation and creates/joins the group membership checked by
-    /// Firestore rules. Signed builds use FirebaseAuth's normal Keychain persistence;
-    /// unsigned preview builds use a private app-support file so ad-hoc signature changes
-    /// do not cause a Keychain prompt after every update.
+    // MARK: - Pairing and authentication
+
     public static func activatePairing(
         syncId: String,
         deviceId: String,
@@ -94,34 +151,59 @@ public enum FirestoreSync {
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         guard let normalized = SyncPairing.normalize(syncId) else {
-            completion(.failure(PairingError.invalidCode))
+            completion(.failure(SyncError.invalidCode))
             return
         }
-        ensureAuthenticated { result in
+        withSession { result in
             switch result {
-            case .failure(let error): completion(.failure(error))
-            case .success(let user):
-                guard let group = groupRef(syncId: normalized), let db else {
-                    completion(.failure(PairingError.firebaseUnavailable))
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let session):
+                func writeMembership() {
+                    var writes = [[String: Any]]()
+                    if createGroup {
+                        writes.append(write(
+                            path: "syncGroups/\(normalized)",
+                            fields: [
+                                "ownerUid": string(session.uid),
+                                "createdAt": timestamp(Date()),
+                                "schemaVersion": integer(2)
+                            ]
+                        ))
+                    }
+                    writes.append(write(
+                        path: "syncGroups/\(normalized)/members/\(session.uid)",
+                        fields: memberFields(deviceId: deviceId)
+                    ))
+                    commit(writes: writes, session: session) { result in
+                        switch result {
+                        case .success:
+                            setReady(true, syncId: normalized)
+                            completion(.success(()))
+                        case .failure(let error):
+                            setReady(false, syncId: normalized)
+                            completion(.failure(error))
+                        }
+                    }
+                }
+
+                guard !createGroup else {
+                    writeMembership()
                     return
                 }
-                let batch = db.batch()
-                if createGroup {
-                    batch.setData([
-                        "ownerUid": user.uid,
-                        "createdAt": Timestamp(date: Date()),
-                        "schemaVersion": 2
-                    ], forDocument: group)
-                }
-                batch.setData([
-                    "deviceId": deviceId,
-                    "platform": "macos",
-                    "joinedAt": Timestamp(date: Date())
-                ], forDocument: group.collection("members").document(user.uid))
-                batch.commit { error in
-                    if let error { completion(.failure(error)); return }
-                    setReady(true, syncId: normalized)
-                    completion(.success(()))
+                request(
+                    method: "GET",
+                    url: documentURL(path: "syncGroups/\(normalized)/members/\(session.uid)"),
+                    session: session
+                ) { status, object, _ in
+                    if status == 200,
+                       let fields = (object as? [String: Any])?["fields"] as? [String: Any],
+                       stringValue(fields, "deviceId") == deviceId {
+                        setReady(true, syncId: normalized)
+                        completion(.success(()))
+                    } else {
+                        writeMembership()
+                    }
                 }
             }
         }
@@ -129,185 +211,261 @@ public enum FirestoreSync {
 
     public static func unpair(syncId: String, completion: @escaping () -> Void) {
         guard let normalized = SyncPairing.normalize(syncId) else { completion(); return }
-        ensureAuthenticated { result in
-            guard case .success(let user) = result,
-                  let group = groupRef(syncId: normalized) else {
+        withSession { result in
+            guard case .success(let session) = result else {
                 setReady(false, syncId: normalized)
                 completion()
                 return
             }
-            group.collection("members").document(user.uid).delete { _ in
+            request(
+                method: "DELETE",
+                url: documentURL(path: "syncGroups/\(normalized)/members/\(session.uid)"),
+                session: session
+            ) { _, _, _ in
                 setReady(false, syncId: normalized)
                 completion()
             }
         }
     }
 
-    private static func ensureAuthenticated(completion: @escaping (Result<User, Error>) -> Void) {
+    private static func withSession(completion: @escaping (Result<Session, Error>) -> Void) {
         configureIfNeeded()
         guard didConfigure else {
-            completion(.failure(PairingError.firebaseUnavailable))
+            completion(.failure(SyncError.firebaseUnavailable))
             return
         }
+
+        func obtainToken(for user: User) {
+            user.getIDToken { token, error in
+                if let error { completion(.failure(error)); return }
+                guard let token, !token.isEmpty else {
+                    completion(.failure(SyncError.authenticationFailed))
+                    return
+                }
+                completion(.success(Session(uid: user.uid, idToken: token)))
+            }
+        }
+
         if let user = Auth.auth().currentUser {
-            completion(.success(user))
+            obtainToken(for: user)
             return
         }
         Auth.auth().signInAnonymously { result, error in
             if let error { completion(.failure(error)); return }
             guard let user = result?.user else {
-                completion(.failure(PairingError.authenticationFailed))
+                completion(.failure(SyncError.authenticationFailed))
                 return
             }
-            completion(.success(user))
+            obtainToken(for: user)
         }
     }
 
-    private enum PairingError: Error {
-        case invalidCode
-        case firebaseUnavailable
-        case authenticationFailed
+    // MARK: - Usage event upload
+
+    public static func uploadClaudeEvents(
+        _ events: [UsageEvent], syncId: String, deviceId: String,
+        completion: @escaping (Bool) -> Void = { _ in }
+    ) {
+        upload(
+            events.map { event in
+                write(
+                    path: "syncGroups/\(syncId)/claudeEvents/\(documentId(deviceId: deviceId, sessionId: event.sessionId, timestamp: event.timestamp))",
+                    fields: ["deviceId": string(deviceId), "event": map(claudeFields(event))]
+                )
+            },
+            syncId: syncId,
+            completion: completion
+        )
     }
 
-    // MARK: - Claude events
-
-    private struct ClaudeEventDocument: Codable {
-        let deviceId: String
-        let event: UsageEvent
+    public static func uploadCodexEvents(
+        _ events: [CodexUsageEvent], syncId: String, deviceId: String,
+        completion: @escaping (Bool) -> Void = { _ in }
+    ) {
+        upload(
+            events.map { event in
+                write(
+                    path: "syncGroups/\(syncId)/codexEvents/\(documentId(deviceId: deviceId, sessionId: event.sessionId, timestamp: event.timestamp))",
+                    fields: ["deviceId": string(deviceId), "event": map(codexFields(event))]
+                )
+            },
+            syncId: syncId,
+            completion: completion
+        )
     }
 
-    public static func uploadClaudeEvents(_ events: [UsageEvent], syncId: String, deviceId: String, completion: @escaping (Bool) -> Void = { _ in }) {
-        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId), !events.isEmpty else { completion(false); return }
-        let batch = db!.batch()
-        for event in events {
-            let docId = documentId(deviceId: deviceId, sessionId: event.sessionId, timestamp: event.timestamp)
-            let ref = group.collection("claudeEvents").document(docId)
-            guard let data = try? Firestore.Encoder().encode(ClaudeEventDocument(deviceId: deviceId, event: event)) else { continue }
-            batch.setData(data, forDocument: ref)
+    public static func uploadOllamaEvents(
+        _ events: [OllamaUsageEvent], syncId: String, deviceId: String,
+        completion: @escaping (Bool) -> Void = { _ in }
+    ) {
+        upload(
+            events.map { event in
+                write(
+                    path: "syncGroups/\(syncId)/ollamaEvents/\(documentId(deviceId: deviceId, sessionId: event.requestId, timestamp: event.timestamp))",
+                    fields: ["deviceId": string(deviceId), "event": map(ollamaFields(event))]
+                )
+            },
+            syncId: syncId,
+            completion: completion
+        )
+    }
+
+    private static func upload(_ writes: [[String: Any]], syncId: String, completion: @escaping (Bool) -> Void) {
+        guard isReady(syncId: syncId), !writes.isEmpty else { completion(false); return }
+        withSession { result in
+            guard case .success(let session) = result else { completion(false); return }
+            commit(writes: Array(writes.prefix(400)), session: session) { result in
+                completion((try? result.get()) != nil)
+            }
         }
-        batch.commit { error in
-            if let error { print("FirestoreSync: claude upload failed: \(error)") }
-            completion(error == nil)
-        }
     }
 
-    // The UI only ever surfaces today/7-day rollups (see `SnapshotComputer`), but the
-    // *listener* itself has no such window: without one it subscribes to the entire
-    // collection, and every single change (any device, any event, ever) forces a full
-    // re-fetch/re-decode of every document the sync group has accumulated since pairing
-    // — for a months-old group this was the largest single contributor to the memory
-    // growth reported in Activity Monitor. A generous 9-day floor (a full day of margin
-    // past the 7-day chart, to also cover the 5-hour block never straddling the cutoff)
-    // keeps the listener's working set bounded to what the app can actually show.
+    // MARK: - Usage event polling
+
     private static var recentEventsCutoff: Date {
-        Calendar.current.date(byAdding: .day, value: -9, to: Date()) ?? Date.distantPast
+        Calendar.current.date(byAdding: .day, value: -9, to: Date()) ?? .distantPast
     }
 
-    public static func observeClaudeEvents(syncId: String, excludingDeviceId: String, onChange: @escaping ([UsageEvent]) -> Void) -> ListenerRegistration? {
-        groupRef(syncId: syncId)?.collection("claudeEvents")
-            .whereField("event.timestamp", isGreaterThanOrEqualTo: Timestamp(date: recentEventsCutoff))
-            .addSnapshotListener { snapshot, error in
-            guard let snapshot else {
-                if let error { print("FirestoreSync: claude listen failed: \(error)") }
-                return
+    public static func observeClaudeEvents(
+        syncId: String, excludingDeviceId: String,
+        initialEvents: [UsageEvent] = [],
+        onChange: @escaping ([UsageEvent]) -> Void
+    ) -> ListenerRegistration? {
+        guard isReady(syncId: syncId) else { return nil }
+        let state = EventPollingState(
+            initial: initialEvents,
+            fallbackCutoff: recentEventsCutoff,
+            key: { "\($0.sessionId)|\($0.timestamp.timeIntervalSince1970)|\($0.projectPath)" },
+            timestamp: { $0.timestamp }
+        )
+        return ListenerRegistration {
+            queryEvents(syncId: syncId, collection: "claudeEvents", since: state.cutoff()) { rows in
+                let events = rows.compactMap { fields -> UsageEvent? in
+                    guard stringValue(fields, "deviceId") != excludingDeviceId,
+                          let event = mapFields(fields, "event"),
+                          let date = dateValue(event, "timestamp") else { return nil }
+                    return UsageEvent(
+                        timestamp: date,
+                        model: stringValue(event, "model"),
+                        inputTokens: intValue(event, "inputTokens"),
+                        outputTokens: intValue(event, "outputTokens"),
+                        cacheCreationTokens: intValue(event, "cacheCreationTokens"),
+                        cacheReadTokens: intValue(event, "cacheReadTokens"),
+                        sessionId: stringValue(event, "sessionId"),
+                        projectPath: stringValue(event, "projectPath", fallback: "unknown")
+                    )
+                }
+                onChange(state.merge(events, oldestAllowed: recentEventsCutoff))
             }
-            let events = snapshot.documents.compactMap { doc -> UsageEvent? in
-                guard let decoded = try? doc.data(as: ClaudeEventDocument.self), decoded.deviceId != excludingDeviceId else { return nil }
-                return decoded.event
+        }
+    }
+
+    public static func observeCodexEvents(
+        syncId: String, excludingDeviceId: String,
+        initialEvents: [CodexUsageEvent] = [],
+        onChange: @escaping ([CodexUsageEvent]) -> Void
+    ) -> ListenerRegistration? {
+        guard isReady(syncId: syncId) else { return nil }
+        let state = EventPollingState(
+            initial: initialEvents,
+            fallbackCutoff: recentEventsCutoff,
+            key: { "\($0.sessionId)|\($0.timestamp.timeIntervalSince1970)|\($0.projectPath)" },
+            timestamp: { $0.timestamp }
+        )
+        return ListenerRegistration {
+            queryEvents(syncId: syncId, collection: "codexEvents", since: state.cutoff()) { rows in
+                let events = rows.compactMap { fields -> CodexUsageEvent? in
+                    guard stringValue(fields, "deviceId") != excludingDeviceId,
+                          let event = mapFields(fields, "event"),
+                          let date = dateValue(event, "timestamp") else { return nil }
+                    return CodexUsageEvent(
+                        timestamp: date,
+                        model: stringValue(event, "model"),
+                        inputTokens: intValue(event, "inputTokens"),
+                        cachedInputTokens: intValue(event, "cachedInputTokens"),
+                        outputTokens: intValue(event, "outputTokens"),
+                        reasoningOutputTokens: intValue(event, "reasoningOutputTokens"),
+                        sessionId: stringValue(event, "sessionId"),
+                        projectPath: stringValue(event, "projectPath", fallback: "unknown")
+                    )
+                }
+                onChange(state.merge(events, oldestAllowed: recentEventsCutoff))
             }
-            onChange(events)
         }
     }
 
-    // MARK: - Codex events
-
-    private struct CodexEventDocument: Codable {
-        let deviceId: String
-        let event: CodexUsageEvent
-    }
-
-    public static func uploadCodexEvents(_ events: [CodexUsageEvent], syncId: String, deviceId: String, completion: @escaping (Bool) -> Void = { _ in }) {
-        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId), !events.isEmpty else { completion(false); return }
-        let batch = db!.batch()
-        for event in events {
-            let docId = documentId(deviceId: deviceId, sessionId: event.sessionId, timestamp: event.timestamp)
-            let ref = group.collection("codexEvents").document(docId)
-            guard let data = try? Firestore.Encoder().encode(CodexEventDocument(deviceId: deviceId, event: event)) else { continue }
-            batch.setData(data, forDocument: ref)
-        }
-        batch.commit { error in
-            if let error { print("FirestoreSync: codex upload failed: \(error)") }
-            completion(error == nil)
-        }
-    }
-
-    public static func observeCodexEvents(syncId: String, excludingDeviceId: String, onChange: @escaping ([CodexUsageEvent]) -> Void) -> ListenerRegistration? {
-        groupRef(syncId: syncId)?.collection("codexEvents")
-            .whereField("event.timestamp", isGreaterThanOrEqualTo: Timestamp(date: recentEventsCutoff))
-            .addSnapshotListener { snapshot, error in
-            guard let snapshot else {
-                if let error { print("FirestoreSync: codex listen failed: \(error)") }
-                return
+    public static func observeOllamaEvents(
+        syncId: String, excludingDeviceId: String,
+        initialEvents: [OllamaUsageEvent] = [],
+        onChange: @escaping ([OllamaUsageEvent]) -> Void
+    ) -> ListenerRegistration? {
+        guard isReady(syncId: syncId) else { return nil }
+        let state = EventPollingState(
+            initial: initialEvents,
+            fallbackCutoff: recentEventsCutoff,
+            key: { $0.requestId },
+            timestamp: { $0.timestamp }
+        )
+        return ListenerRegistration {
+            queryEvents(syncId: syncId, collection: "ollamaEvents", since: state.cutoff()) { rows in
+                let events = rows.compactMap { fields -> OllamaUsageEvent? in
+                    guard stringValue(fields, "deviceId") != excludingDeviceId,
+                          let event = mapFields(fields, "event"),
+                          let date = dateValue(event, "timestamp") else { return nil }
+                    return OllamaUsageEvent(
+                        timestamp: date,
+                        model: stringValue(event, "model", fallback: "unknown"),
+                        inputTokens: intValue(event, "inputTokens"),
+                        outputTokens: intValue(event, "outputTokens"),
+                        totalDurationNanoseconds: Int64(intValue(event, "totalDurationNanoseconds")),
+                        source: OllamaUsageSource(rawValue: stringValue(event, "source")) ?? .local,
+                        requestId: stringValue(event, "requestId")
+                    )
+                }
+                onChange(state.merge(events, oldestAllowed: recentEventsCutoff))
             }
-            let events = snapshot.documents.compactMap { doc -> CodexUsageEvent? in
-                guard let decoded = try? doc.data(as: CodexEventDocument.self), decoded.deviceId != excludingDeviceId else { return nil }
-                return decoded.event
+        }
+    }
+
+    private static func queryEvents(
+        syncId: String,
+        collection: String,
+        since: Date,
+        completion: @escaping ([[String: Any]]) -> Void
+    ) {
+        let body: [String: Any] = [
+            "structuredQuery": [
+                "from": [["collectionId": collection]],
+                "where": [
+                    "fieldFilter": [
+                        "field": ["fieldPath": "event.timestamp"],
+                        "op": "GREATER_THAN_OR_EQUAL",
+                        "value": timestamp(since)
+                    ]
+                ]
+            ]
+        ]
+        withSession { result in
+            guard case .success(let session) = result else { return }
+            request(method: "POST", url: runQueryURL(syncId: syncId), session: session, body: body) { status, object, error in
+                guard status == 200, let rows = object as? [[String: Any]] else {
+                    let detail = object.map { String(describing: $0) }
+                        ?? error.map { String(describing: $0) }
+                        ?? "unknown error"
+                    logger.error("REST query failed for \(collection, privacy: .public) (HTTP \(status)): \(detail, privacy: .public)")
+                    return
+                }
+                let fields = rows.compactMap {
+                    (($0["document"] as? [String: Any])?["fields"] as? [String: Any])
+                }
+                logger.info("REST query fetched \(fields.count) documents from \(collection, privacy: .public)")
+                completion(fields)
             }
-            onChange(events)
         }
     }
 
-    // MARK: - Ollama events
+    // MARK: - Codex rate limits
 
-    private struct OllamaEventDocument: Codable {
-        let deviceId: String
-        let event: OllamaUsageEvent
-    }
-
-    public static func uploadOllamaEvents(_ events: [OllamaUsageEvent], syncId: String, deviceId: String, completion: @escaping (Bool) -> Void = { _ in }) {
-        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId), !events.isEmpty else { completion(false); return }
-        let batch = db!.batch()
-        for event in events {
-            let docId = documentId(deviceId: deviceId, sessionId: event.requestId, timestamp: event.timestamp)
-            let ref = group.collection("ollamaEvents").document(docId)
-            guard let data = try? Firestore.Encoder().encode(OllamaEventDocument(deviceId: deviceId, event: event)) else { continue }
-            batch.setData(data, forDocument: ref)
-        }
-        batch.commit { error in
-            if let error { print("FirestoreSync: Ollama upload failed: \(error)") }
-            completion(error == nil)
-        }
-    }
-
-    public static func observeOllamaEvents(syncId: String, excludingDeviceId: String, onChange: @escaping ([OllamaUsageEvent]) -> Void) -> ListenerRegistration? {
-        groupRef(syncId: syncId)?.collection("ollamaEvents")
-            .whereField("event.timestamp", isGreaterThanOrEqualTo: Timestamp(date: recentEventsCutoff))
-            .addSnapshotListener { snapshot, error in
-            guard let snapshot else {
-                if let error { print("FirestoreSync: Ollama listen failed: \(error)") }
-                return
-            }
-            let events = snapshot.documents.compactMap { doc -> OllamaUsageEvent? in
-                guard let decoded = try? doc.data(as: OllamaEventDocument.self), decoded.deviceId != excludingDeviceId else { return nil }
-                return decoded.event
-            }
-            onChange(events)
-        }
-    }
-
-    // MARK: - Codex rate limits (already account-wide/official — just relay whichever
-    // device saw the newest reading, no merging needed)
-
-    private struct CodexRateLimitsDocument: Codable {
-        let deviceId: String
-        let eventTimestamp: Date
-        let primary: CodexRateLimitWindow?
-        let secondary: CodexRateLimitWindow?
-    }
-
-    /// Overwrites the shared "latest reading" only if this one is actually newer, using a
-    /// transaction so two devices racing to update don't clobber a newer value with an
-    /// older one.
     public static func uploadCodexRateLimitsIfNewer(
         primary: CodexRateLimitWindow?,
         secondary: CodexRateLimitWindow?,
@@ -315,37 +473,52 @@ public enum FirestoreSync {
         syncId: String,
         deviceId: String
     ) {
-        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId), let db else { return }
-        let ref = group.collection("codexRateLimits").document("latest")
-        db.runTransaction({ transaction, errorPointer in
-            let existing = try? transaction.getDocument(ref).data(as: CodexRateLimitsDocument.self)
-            if let existing, existing.eventTimestamp >= eventTimestamp {
-                return nil
-            }
-            let doc = CodexRateLimitsDocument(deviceId: deviceId, eventTimestamp: eventTimestamp, primary: primary, secondary: secondary)
-            guard let data = try? Firestore.Encoder().encode(doc) else { return nil }
-            transaction.setData(data, forDocument: ref)
-            return nil
-        }, completion: { _, error in
-            if let error { print("FirestoreSync: rate limit upload failed: \(error)") }
-        })
-    }
+        guard isReady(syncId: syncId) else { return }
+        withSession { result in
+            guard case .success(let session) = result else { return }
+            let path = "syncGroups/\(syncId)/codexRateLimits/latest"
+            request(method: "GET", url: documentURL(path: path), session: session) { status, object, _ in
+                if status == 200,
+                   let fields = (object as? [String: Any])?["fields"] as? [String: Any],
+                   let existing = dateValue(fields, "eventTimestamp"),
+                   existing >= eventTimestamp { return }
 
-    public static func observeCodexRateLimits(syncId: String, onChange: @escaping (_ primary: CodexRateLimitWindow?, _ secondary: CodexRateLimitWindow?, _ eventTimestamp: Date?) -> Void) -> ListenerRegistration? {
-        groupRef(syncId: syncId)?.collection("codexRateLimits").document("latest").addSnapshotListener { snapshot, error in
-            guard let snapshot, snapshot.exists, let decoded = try? snapshot.data(as: CodexRateLimitsDocument.self) else {
-                if let error { print("FirestoreSync: rate limit listen failed: \(error)") }
-                onChange(nil, nil, nil)
-                return
+                var fields: [String: Any] = [
+                    "deviceId": string(deviceId),
+                    "eventTimestamp": timestamp(eventTimestamp)
+                ]
+                if let primary { fields["primary"] = map(rateWindowFields(primary)) }
+                if let secondary { fields["secondary"] = map(rateWindowFields(secondary)) }
+                patchDocument(path: path, fields: fields, session: session) { _ in }
             }
-            onChange(decoded.primary, decoded.secondary, decoded.eventTimestamp)
         }
     }
 
-    // MARK: - Appearance / display-item settings (opt-in mirroring, not automatic like
-    // usage events — a device only applies these when the user turns on "sync with
-    // other devices" for it, since look-and-feel is a personal-per-device choice by
-    // default).
+    public static func observeCodexRateLimits(
+        syncId: String,
+        onChange: @escaping (_ primary: CodexRateLimitWindow?, _ secondary: CodexRateLimitWindow?, _ eventTimestamp: Date?) -> Void
+    ) -> ListenerRegistration? {
+        guard isReady(syncId: syncId) else { return nil }
+        return ListenerRegistration {
+            withSession { result in
+                guard case .success(let session) = result else { return }
+                request(method: "GET", url: documentURL(path: "syncGroups/\(syncId)/codexRateLimits/latest"), session: session) { status, object, _ in
+                    guard status == 200,
+                          let fields = (object as? [String: Any])?["fields"] as? [String: Any] else {
+                        onChange(nil, nil, nil)
+                        return
+                    }
+                    onChange(
+                        mapFields(fields, "primary").flatMap(rateWindow),
+                        mapFields(fields, "secondary").flatMap(rateWindow),
+                        dateValue(fields, "eventTimestamp")
+                    )
+                }
+            }
+        }
+    }
+
+    // MARK: - Appearance settings
 
     public struct AppearanceSettingsDocument: Codable, Equatable, Sendable {
         public let gaugeColorHex: String
@@ -364,35 +537,6 @@ public enum FirestoreSync {
         public let showProjectBreakdown: Bool
         public let showHourlyChart: Bool
         public let showLast7Days: Bool
-
-        private enum CodingKeys: String, CodingKey {
-            case gaugeColorHex, codexColorHex, ollamaColorHex, gaugeUseGradient, gaugeStyle
-            case showClaudeProvider, showCodexProvider, showOllamaProvider
-            case showTimeGauge, showTokenGauge, showTodaySummary, showEstimatedCost
-            case showModelBreakdown, showProjectBreakdown, showHourlyChart, showLast7Days
-        }
-
-        /// Older paired devices wrote settings before Ollama existed. Keep those documents
-        /// readable and apply the new provider defaults until the next settings upload.
-        public init(from decoder: Decoder) throws {
-            let values = try decoder.container(keyedBy: CodingKeys.self)
-            gaugeColorHex = try values.decode(String.self, forKey: .gaugeColorHex)
-            codexColorHex = try values.decode(String.self, forKey: .codexColorHex)
-            ollamaColorHex = try values.decodeIfPresent(String.self, forKey: .ollamaColorHex) ?? "#F97316"
-            gaugeUseGradient = try values.decode(Bool.self, forKey: .gaugeUseGradient)
-            gaugeStyle = try values.decode(String.self, forKey: .gaugeStyle)
-            showClaudeProvider = try values.decode(Bool.self, forKey: .showClaudeProvider)
-            showCodexProvider = try values.decode(Bool.self, forKey: .showCodexProvider)
-            showOllamaProvider = try values.decodeIfPresent(Bool.self, forKey: .showOllamaProvider) ?? true
-            showTimeGauge = try values.decode(Bool.self, forKey: .showTimeGauge)
-            showTokenGauge = try values.decode(Bool.self, forKey: .showTokenGauge)
-            showTodaySummary = try values.decode(Bool.self, forKey: .showTodaySummary)
-            showEstimatedCost = try values.decode(Bool.self, forKey: .showEstimatedCost)
-            showModelBreakdown = try values.decode(Bool.self, forKey: .showModelBreakdown)
-            showProjectBreakdown = try values.decode(Bool.self, forKey: .showProjectBreakdown)
-            showHourlyChart = try values.decode(Bool.self, forKey: .showHourlyChart)
-            showLast7Days = try values.decode(Bool.self, forKey: .showLast7Days)
-        }
 
         public init(
             gaugeColorHex: String,
@@ -432,30 +576,38 @@ public enum FirestoreSync {
     }
 
     public static func uploadAppearanceSettings(_ settings: AppearanceSettingsDocument, syncId: String) {
-        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId) else { return }
-        let ref = group.collection("settings").document("appearance")
-        guard let data = try? Firestore.Encoder().encode(settings) else { return }
-        ref.setData(data) { error in
-            if let error { print("FirestoreSync: appearance settings upload failed: \(error)") }
+        guard isReady(syncId: syncId) else { return }
+        withSession { result in
+            guard case .success(let session) = result else { return }
+            patchDocument(
+                path: "syncGroups/\(syncId)/settings/appearance",
+                fields: appearanceFields(settings),
+                session: session
+            ) { _ in }
         }
     }
 
-    public static func observeAppearanceSettings(syncId: String, onChange: @escaping (AppearanceSettingsDocument?) -> Void) -> ListenerRegistration? {
-        groupRef(syncId: syncId)?.collection("settings").document("appearance").addSnapshotListener { snapshot, error in
-            guard let snapshot, snapshot.exists, let decoded = try? snapshot.data(as: AppearanceSettingsDocument.self) else {
-                if let error { print("FirestoreSync: appearance settings listen failed: \(error)") }
-                onChange(nil)
-                return
+    public static func observeAppearanceSettings(
+        syncId: String,
+        onChange: @escaping (AppearanceSettingsDocument?) -> Void
+    ) -> ListenerRegistration? {
+        guard isReady(syncId: syncId) else { return nil }
+        return ListenerRegistration {
+            withSession { result in
+                guard case .success(let session) = result else { return }
+                request(method: "GET", url: documentURL(path: "syncGroups/\(syncId)/settings/appearance"), session: session) { status, object, _ in
+                    guard status == 200,
+                          let fields = (object as? [String: Any])?["fields"] as? [String: Any] else {
+                        onChange(nil)
+                        return
+                    }
+                    onChange(appearance(from: fields))
+                }
             }
-            onChange(decoded)
         }
     }
 
-    // MARK: - Remote notifications (cross-device "ping" — e.g. Mac tells the paired
-    // iPhone that Claude/Codex just finished responding). Each ping is its own document
-    // rather than one shared "latest" doc so a burst of pings isn't lossy the way a
-    // single overwritten field would be; callers filter to documents created after they
-    // started listening so relaunching the app never replays old pings as new ones.
+    // MARK: - Remote notifications
 
     public struct RemoteNotificationDocument: Codable, Sendable {
         public let sourceDeviceId: String
@@ -472,35 +624,308 @@ public enum FirestoreSync {
     }
 
     public static func sendRemoteNotification(title: String, body: String, syncId: String, deviceId: String) {
-        guard isReady(syncId: syncId), let group = groupRef(syncId: syncId) else { return }
-        let doc = RemoteNotificationDocument(sourceDeviceId: deviceId, title: title, body: body, createdAt: Date())
-        guard let data = try? Firestore.Encoder().encode(doc) else { return }
-        group.collection("notifications").document(UUID().uuidString).setData(data) { error in
-            if let error { print("FirestoreSync: remote notification send failed: \(error)") }
+        guard isReady(syncId: syncId) else { return }
+        withSession { result in
+            guard case .success(let session) = result else { return }
+            patchDocument(
+                path: "syncGroups/\(syncId)/notifications/\(UUID().uuidString)",
+                fields: [
+                    "sourceDeviceId": string(deviceId),
+                    "title": string(title),
+                    "body": string(body),
+                    "createdAt": timestamp(Date())
+                ],
+                session: session
+            ) { _ in }
         }
     }
 
-    /// `onNotification` fires once per new document whose `sourceDeviceId` isn't
-    /// `excludingDeviceId` — callers are expected to only start observing once (e.g. at
-    /// listener-attach time) and compare `createdAt` against that moment themselves if
-    /// they need to ignore backlog; this call does not filter by time on its own since a
-    /// caller reattaching mid-session (e.g. after re-pairing) may legitimately want the
-    /// most recent one even if it predates *this* attach.
-    public static func observeRemoteNotifications(syncId: String, excludingDeviceId: String, onNotification: @escaping (_ id: String, _ title: String, _ body: String, _ createdAt: Date) -> Void) -> ListenerRegistration? {
-        groupRef(syncId: syncId)?.collection("notifications").addSnapshotListener { snapshot, error in
-            guard let snapshot else {
-                if let error { print("FirestoreSync: remote notification listen failed: \(error)") }
+    public static func observeRemoteNotifications(
+        syncId: String,
+        excludingDeviceId: String,
+        onNotification: @escaping (_ id: String, _ title: String, _ body: String, _ createdAt: Date) -> Void
+    ) -> ListenerRegistration? {
+        guard isReady(syncId: syncId) else { return nil }
+        let seen = SeenDocuments()
+        return ListenerRegistration {
+            let body: [String: Any] = ["structuredQuery": ["from": [["collectionId": "notifications"]]]]
+            withSession { result in
+                guard case .success(let session) = result else { return }
+                request(method: "POST", url: runQueryURL(syncId: syncId), session: session, body: body) { status, object, _ in
+                    guard status == 200, let rows = object as? [[String: Any]] else { return }
+                    for row in rows {
+                        guard let document = row["document"] as? [String: Any],
+                              let name = document["name"] as? String,
+                              let fields = document["fields"] as? [String: Any],
+                              stringValue(fields, "sourceDeviceId") != excludingDeviceId,
+                              let createdAt = dateValue(fields, "createdAt") else { continue }
+                        let id = name.split(separator: "/").last.map(String.init) ?? name
+                        guard seen.insert(id) else { continue }
+                        onNotification(id, stringValue(fields, "title"), stringValue(fields, "body"), createdAt)
+                    }
+                }
+            }
+        }
+    }
+
+    private final class SeenDocuments: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values = Set<String>()
+        func insert(_ value: String) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return values.insert(value).inserted
+        }
+    }
+
+    // MARK: - REST transport
+
+    private static func request(
+        method: String,
+        url: URL?,
+        session: Session,
+        body: [String: Any]? = nil,
+        completion: @escaping (_ status: Int, _ object: Any?, _ error: Error?) -> Void
+    ) {
+        guard let url else { completion(0, nil, SyncError.firebaseUnavailable); return }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 45
+        request.setValue("Bearer \(session.idToken)", forHTTPHeaderField: "Authorization")
+        if let body {
+            do {
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            } catch {
+                completion(0, nil, error)
                 return
             }
-            for change in snapshot.documentChanges where change.type == .added {
-                guard let decoded = try? change.document.data(as: RemoteNotificationDocument.self),
-                      decoded.sourceDeviceId != excludingDeviceId else { continue }
-                onNotification(change.document.documentID, decoded.title, decoded.body, decoded.createdAt)
+        }
+        let completionBox = UncheckedBox(completion)
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) }
+            if let error { completionBox.value(status, object, error); return }
+            if !(200...299).contains(status) {
+                let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                completionBox.value(status, object, SyncError.http(status, text))
+                return
             }
+            completionBox.value(status, object, nil)
+        }.resume()
+    }
+
+    private static func commit(
+        writes: [[String: Any]],
+        session: Session,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        request(method: "POST", url: commitURL(), session: session, body: ["writes": writes]) { _, _, error in
+            if let error { completion(.failure(error)) } else { completion(.success(())) }
         }
     }
 
-    // MARK: - Helpers
+    private static func patchDocument(
+        path: String,
+        fields: [String: Any],
+        session: Session,
+        completion: @escaping (Bool) -> Void
+    ) {
+        request(method: "PATCH", url: documentURL(path: path), session: session, body: ["fields": fields]) { status, _, _ in
+            completion((200...299).contains(status))
+        }
+    }
+
+    private static func baseDocumentsURL() -> String? {
+        guard let config else { return nil }
+        let project = config.projectId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? config.projectId
+        return "https://firestore.googleapis.com/v1/projects/\(project)/databases/(default)/documents"
+    }
+
+    private static func url(_ raw: String) -> URL? {
+        guard let config else { return nil }
+        var components = URLComponents(string: raw)
+        components?.queryItems = [URLQueryItem(name: "key", value: config.apiKey)]
+        return components?.url
+    }
+
+    private static func documentURL(path: String) -> URL? {
+        guard let base = baseDocumentsURL() else { return nil }
+        let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+        return url("\(base)/\(encoded)")
+    }
+
+    private static func commitURL() -> URL? {
+        guard let base = baseDocumentsURL() else { return nil }
+        return url("\(base):commit")
+    }
+
+    private static func runQueryURL(syncId: String) -> URL? {
+        guard let base = baseDocumentsURL() else { return nil }
+        return url("\(base)/syncGroups/\(syncId):runQuery")
+    }
+
+    private static func fullDocumentName(path: String) -> String {
+        guard let config else { return path }
+        return "projects/\(config.projectId)/databases/(default)/documents/\(path)"
+    }
+
+    private static func write(path: String, fields: [String: Any]) -> [String: Any] {
+        ["update": ["name": fullDocumentName(path: path), "fields": fields]]
+    }
+
+    // MARK: - Firestore value encoding/decoding
+
+    private static func memberFields(deviceId: String) -> [String: Any] {
+        [
+            "deviceId": string(deviceId),
+            "platform": string("macos"),
+            "joinedAt": timestamp(Date())
+        ]
+    }
+
+    private static func claudeFields(_ event: UsageEvent) -> [String: Any] {
+        [
+            "timestamp": timestamp(event.timestamp),
+            "model": string(event.model),
+            "inputTokens": integer(event.inputTokens),
+            "outputTokens": integer(event.outputTokens),
+            "cacheCreationTokens": integer(event.cacheCreationTokens),
+            "cacheReadTokens": integer(event.cacheReadTokens),
+            "sessionId": string(event.sessionId),
+            "projectPath": string(event.projectPath)
+        ]
+    }
+
+    private static func codexFields(_ event: CodexUsageEvent) -> [String: Any] {
+        [
+            "timestamp": timestamp(event.timestamp),
+            "model": string(event.model),
+            "inputTokens": integer(event.inputTokens),
+            "cachedInputTokens": integer(event.cachedInputTokens),
+            "outputTokens": integer(event.outputTokens),
+            "reasoningOutputTokens": integer(event.reasoningOutputTokens),
+            "sessionId": string(event.sessionId),
+            "projectPath": string(event.projectPath)
+        ]
+    }
+
+    private static func ollamaFields(_ event: OllamaUsageEvent) -> [String: Any] {
+        [
+            "timestamp": timestamp(event.timestamp),
+            "model": string(event.model),
+            "inputTokens": integer(event.inputTokens),
+            "outputTokens": integer(event.outputTokens),
+            "totalDurationNanoseconds": integer(event.totalDurationNanoseconds),
+            "source": string(event.source.rawValue),
+            "requestId": string(event.requestId)
+        ]
+    }
+
+    private static func rateWindowFields(_ window: CodexRateLimitWindow) -> [String: Any] {
+        var fields: [String: Any] = [
+            "usedPercent": double(window.usedPercent),
+            "windowMinutes": integer(window.windowMinutes),
+            "resetsAt": timestamp(window.resetsAt)
+        ]
+        if let planType = window.planType { fields["planType"] = string(planType) }
+        return fields
+    }
+
+    private static func rateWindow(_ fields: [String: Any]) -> CodexRateLimitWindow? {
+        guard let resetsAt = dateValue(fields, "resetsAt") else { return nil }
+        return CodexRateLimitWindow(
+            usedPercent: doubleValue(fields, "usedPercent"),
+            windowMinutes: intValue(fields, "windowMinutes"),
+            resetsAt: resetsAt,
+            planType: optionalStringValue(fields, "planType")
+        )
+    }
+
+    private static func appearanceFields(_ value: AppearanceSettingsDocument) -> [String: Any] {
+        [
+            "gaugeColorHex": string(value.gaugeColorHex),
+            "codexColorHex": string(value.codexColorHex),
+            "ollamaColorHex": string(value.ollamaColorHex),
+            "gaugeUseGradient": boolean(value.gaugeUseGradient),
+            "gaugeStyle": string(value.gaugeStyle),
+            "showClaudeProvider": boolean(value.showClaudeProvider),
+            "showCodexProvider": boolean(value.showCodexProvider),
+            "showOllamaProvider": boolean(value.showOllamaProvider),
+            "showTimeGauge": boolean(value.showTimeGauge),
+            "showTokenGauge": boolean(value.showTokenGauge),
+            "showTodaySummary": boolean(value.showTodaySummary),
+            "showEstimatedCost": boolean(value.showEstimatedCost),
+            "showModelBreakdown": boolean(value.showModelBreakdown),
+            "showProjectBreakdown": boolean(value.showProjectBreakdown),
+            "showHourlyChart": boolean(value.showHourlyChart),
+            "showLast7Days": boolean(value.showLast7Days)
+        ]
+    }
+
+    private static func appearance(from fields: [String: Any]) -> AppearanceSettingsDocument {
+        AppearanceSettingsDocument(
+            gaugeColorHex: stringValue(fields, "gaugeColorHex"),
+            codexColorHex: stringValue(fields, "codexColorHex"),
+            ollamaColorHex: stringValue(fields, "ollamaColorHex", fallback: "#F97316"),
+            gaugeUseGradient: boolValue(fields, "gaugeUseGradient"),
+            gaugeStyle: stringValue(fields, "gaugeStyle"),
+            showClaudeProvider: boolValue(fields, "showClaudeProvider"),
+            showCodexProvider: boolValue(fields, "showCodexProvider"),
+            showOllamaProvider: boolValue(fields, "showOllamaProvider", fallback: true),
+            showTimeGauge: boolValue(fields, "showTimeGauge"),
+            showTokenGauge: boolValue(fields, "showTokenGauge"),
+            showTodaySummary: boolValue(fields, "showTodaySummary"),
+            showEstimatedCost: boolValue(fields, "showEstimatedCost"),
+            showModelBreakdown: boolValue(fields, "showModelBreakdown"),
+            showProjectBreakdown: boolValue(fields, "showProjectBreakdown"),
+            showHourlyChart: boolValue(fields, "showHourlyChart"),
+            showLast7Days: boolValue(fields, "showLast7Days")
+        )
+    }
+
+    private static func string(_ value: String) -> [String: Any] { ["stringValue": value] }
+    private static func integer<T: BinaryInteger>(_ value: T) -> [String: Any] { ["integerValue": String(value)] }
+    private static func double(_ value: Double) -> [String: Any] { ["doubleValue": value] }
+    private static func boolean(_ value: Bool) -> [String: Any] { ["booleanValue": value] }
+    private static func timestamp(_ value: Date) -> [String: Any] { ["timestampValue": iso8601WithFractional.string(from: value)] }
+    private static func map(_ fields: [String: Any]) -> [String: Any] { ["mapValue": ["fields": fields]] }
+
+    private static func stringValue(_ fields: [String: Any], _ key: String, fallback: String = "") -> String {
+        ((fields[key] as? [String: Any])?["stringValue"] as? String) ?? fallback
+    }
+
+    private static func optionalStringValue(_ fields: [String: Any], _ key: String) -> String? {
+        (fields[key] as? [String: Any])?["stringValue"] as? String
+    }
+
+    private static func intValue(_ fields: [String: Any], _ key: String) -> Int {
+        guard let raw = (fields[key] as? [String: Any])?["integerValue"] else { return 0 }
+        if let string = raw as? String { return Int(string) ?? 0 }
+        if let number = raw as? NSNumber { return number.intValue }
+        return 0
+    }
+
+    private static func doubleValue(_ fields: [String: Any], _ key: String) -> Double {
+        guard let value = fields[key] as? [String: Any] else { return 0 }
+        if let number = value["doubleValue"] as? NSNumber { return number.doubleValue }
+        if let string = value["doubleValue"] as? String { return Double(string) ?? 0 }
+        if let integer = value["integerValue"] as? String { return Double(integer) ?? 0 }
+        return 0
+    }
+
+    private static func boolValue(_ fields: [String: Any], _ key: String, fallback: Bool = false) -> Bool {
+        ((fields[key] as? [String: Any])?["booleanValue"] as? Bool) ?? fallback
+    }
+
+    private static func dateValue(_ fields: [String: Any], _ key: String) -> Date? {
+        guard let raw = (fields[key] as? [String: Any])?["timestampValue"] as? String else { return nil }
+        return iso8601WithFractional.date(from: raw) ?? iso8601.date(from: raw)
+    }
+
+    private static func mapFields(_ fields: [String: Any], _ key: String) -> [String: Any]? {
+        ((fields[key] as? [String: Any])?["mapValue"] as? [String: Any])?["fields"] as? [String: Any]
+    }
 
     private static func documentId(deviceId: String, sessionId: String, timestamp: Date) -> String {
         let raw = "\(deviceId)_\(sessionId)_\(Int(timestamp.timeIntervalSince1970 * 1000))"

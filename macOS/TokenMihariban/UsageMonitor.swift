@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 import WidgetKit
-import FirebaseFirestore
+import OSLog
 import ClaudeUsageCore
 import ClaudeUsageSync
 
@@ -30,9 +30,11 @@ import ClaudeUsageSync
 /// devices, not just this one. See `FirestoreSync.swift` for why.
 @MainActor
 final class UsageMonitor: ObservableObject {
+    private let syncLogger = Logger(subsystem: "com.yoyoi441.TokenMihariban", category: "device-sync")
     @Published private(set) var snapshot: UsageSnapshot = SnapshotStore.readSnapshot() ?? .empty
     @Published private(set) var codexSnapshot: CodexSnapshot = SnapshotStore.readCodexSnapshot() ?? .empty
     @Published private(set) var ollamaSnapshot: OllamaSnapshot = .empty
+    @Published private(set) var remoteOllamaTodayTokens: Int = 0
     @Published private(set) var ollamaProxyState: OllamaProxyState = .stopped
     @Published var refreshIntervalSeconds: Double = 60 {
         didSet { restartFallbackTimer() }
@@ -56,6 +58,7 @@ final class UsageMonitor: ObservableObject {
     private var latestCodexWindowEventTimestamp: Date?
 
     private let ollamaStore = OllamaUsageStore()
+    private let remoteCacheStore = RemoteUsageCacheStore()
     private var ollamaProxy: OllamaProxyService?
     private var allOllamaEvents: [OllamaUsageEvent] = []
 
@@ -70,6 +73,8 @@ final class UsageMonitor: ObservableObject {
     private var codexEventsListener: ListenerRegistration?
     private var ollamaEventsListener: ListenerRegistration?
     private var codexRateLimitsListener: ListenerRegistration?
+    private var cloudSyncActivationInFlight = false
+    private var cloudUploadsInFlight = Set<String>()
 
     private let projectsDirectory: URL
     private let codexSessionsDirectory: URL
@@ -81,6 +86,12 @@ final class UsageMonitor: ObservableObject {
         codexSessionsDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions", isDirectory: true)
         allOllamaEvents = ollamaStore.load()
+        if let syncId = SyncPairing.syncId,
+           let cache = remoteCacheStore.load(syncId: syncId) {
+            remoteClaudeEvents = cache.claudeEvents
+            remoteCodexEvents = cache.codexEvents
+            remoteOllamaEvents = cache.ollamaEvents
+        }
 
         FirestoreSync.configureIfNeeded()
 
@@ -194,18 +205,40 @@ final class UsageMonitor: ObservableObject {
         remoteClaudeEvents = []
         remoteCodexEvents = []
         remoteOllamaEvents = []
+        remoteOllamaTodayTokens = 0
+        remoteCacheStore.clear()
+        cloudSyncActivationInFlight = false
         startCloudSyncIfPaired()
         refresh()
     }
 
     private func startCloudSyncIfPaired() {
-        guard FirestoreSync.isAvailable, let syncId = SyncPairing.syncId else { return }
+        guard FirestoreSync.isAvailable else {
+            syncLogger.error("Firebase configuration is unavailable")
+            return
+        }
+        guard let syncId = SyncPairing.syncId else { return }
+        guard !FirestoreSync.isReady(syncId: syncId), !cloudSyncActivationInFlight else { return }
 
+        syncLogger.info("Activating device sync for group \(syncId, privacy: .private(mask: .hash))")
+        cloudSyncActivationInFlight = true
         FirestoreSync.activatePairing(syncId: syncId, deviceId: deviceId, createGroup: false) { [weak self] result in
-            guard case .success = result else { return }
             Task { @MainActor in
-                self?.attachCloudSyncListeners(syncId: syncId)
-                self?.refresh()
+                guard let self else { return }
+                self.cloudSyncActivationInFlight = false
+                guard SyncPairing.syncId == syncId else { return }
+                guard case .success = result else {
+                    if case .failure(let error) = result {
+                        self.syncLogger.error("Device sync activation failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                    return
+                }
+                self.syncLogger.info("Device sync is ready")
+                self.attachCloudSyncListeners(syncId: syncId)
+                // Successful activation immediately retries all locally retained
+                // events. If startup was temporarily offline, the fallback refresh
+                // calls startCloudSyncIfPaired() again on the next interval.
+                self.refresh()
             }
         }
     }
@@ -216,24 +249,43 @@ final class UsageMonitor: ObservableObject {
         ollamaEventsListener?.remove()
         codexRateLimitsListener?.remove()
 
-        claudeListener = FirestoreSync.observeClaudeEvents(syncId: syncId, excludingDeviceId: deviceId) { [weak self] events in
+        claudeListener = FirestoreSync.observeClaudeEvents(
+            syncId: syncId,
+            excludingDeviceId: deviceId,
+            initialEvents: remoteClaudeEvents
+        ) { [weak self] events in
             Task { @MainActor in
-                self?.remoteClaudeEvents = events
-                self?.refreshClaude()
+                guard let self else { return }
+                self.remoteClaudeEvents = events
+                self.saveRemoteCache(syncId: syncId)
+                self.refreshClaude()
                 WidgetCenter.shared.reloadAllTimelines()
             }
         }
-        codexEventsListener = FirestoreSync.observeCodexEvents(syncId: syncId, excludingDeviceId: deviceId) { [weak self] events in
+        codexEventsListener = FirestoreSync.observeCodexEvents(
+            syncId: syncId,
+            excludingDeviceId: deviceId,
+            initialEvents: remoteCodexEvents
+        ) { [weak self] events in
             Task { @MainActor in
-                self?.remoteCodexEvents = events
-                self?.refreshCodex()
+                guard let self else { return }
+                self.remoteCodexEvents = events
+                self.saveRemoteCache(syncId: syncId)
+                self.refreshCodex()
                 WidgetCenter.shared.reloadAllTimelines()
             }
         }
-        ollamaEventsListener = FirestoreSync.observeOllamaEvents(syncId: syncId, excludingDeviceId: deviceId) { [weak self] events in
+        ollamaEventsListener = FirestoreSync.observeOllamaEvents(
+            syncId: syncId,
+            excludingDeviceId: deviceId,
+            initialEvents: remoteOllamaEvents
+        ) { [weak self] events in
             Task { @MainActor in
-                self?.remoteOllamaEvents = events
-                self?.refreshOllama()
+                guard let self else { return }
+                self.remoteOllamaEvents = events
+                self.saveRemoteCache(syncId: syncId)
+                self.refreshOllama()
+                self.syncLogger.info("Received \(events.count) remote Ollama events (today: \(self.remoteOllamaTodayTokens) tokens)")
             }
         }
         codexRateLimitsListener = FirestoreSync.observeCodexRateLimits(syncId: syncId) { [weak self] primary, secondary, eventTimestamp in
@@ -252,6 +304,16 @@ final class UsageMonitor: ObservableObject {
         // So a freshly-paired device sees this Mac's current look-and-feel right away,
         // not only after the next time a setting happens to change.
         pushAppearanceSettingsIfPaired()
+    }
+
+    private func saveRemoteCache(syncId: String) {
+        guard SyncPairing.syncId == syncId else { return }
+        remoteCacheStore.save(RemoteUsageCache(
+            syncId: syncId,
+            claudeEvents: remoteClaudeEvents,
+            codexEvents: remoteCodexEvents,
+            ollamaEvents: remoteOllamaEvents
+        ))
     }
 
     /// Mac is treated as the source of truth for appearance/display-item settings:
@@ -292,6 +354,7 @@ final class UsageMonitor: ObservableObject {
     }
 
     func refresh() {
+        startCloudSyncIfPaired()
         refreshClaude()
         refreshCodex()
         refreshOllama()
@@ -430,9 +493,17 @@ final class UsageMonitor: ObservableObject {
             .prefix(400))
         guard !toUpload.isEmpty else { return }
         guard let newest = toUpload.map({ timestamp($0) }).max() else { return }
+        guard !cloudUploadsInFlight.contains(watermarkKey) else { return }
+        cloudUploadsInFlight.insert(watermarkKey)
+        syncLogger.info("Uploading \(toUpload.count) events for \(watermarkKeyPrefix, privacy: .public)")
         upload(toUpload, syncId, deviceId) { succeeded in
-            guard succeeded else { return }
             DispatchQueue.main.async {
+                self.cloudUploadsInFlight.remove(watermarkKey)
+                guard succeeded else {
+                    self.syncLogger.error("Upload failed for \(watermarkKeyPrefix, privacy: .public)")
+                    return
+                }
+                self.syncLogger.info("Upload completed for \(watermarkKeyPrefix, privacy: .public)")
                 UserDefaults.standard.set(newest.timeIntervalSince1970, forKey: watermarkKey)
             }
         }
@@ -506,6 +577,11 @@ final class UsageMonitor: ObservableObject {
             dailyTokenTarget: dailyTarget,
             colorHex: defaults.string(forKey: "ollamaColorHex") ?? OllamaSnapshot.empty.colorHex
         )
+        remoteOllamaTodayTokens = OllamaUsageComputer.compute(
+            events: remoteOllamaEvents,
+            dailyTokenTarget: 0,
+            colorHex: defaults.string(forKey: "ollamaColorHex") ?? OllamaSnapshot.empty.colorHex
+        ).todayTotalTokens
     }
 
     private func findLogFiles(in directory: URL, extension fileExtension: String) -> [URL] {

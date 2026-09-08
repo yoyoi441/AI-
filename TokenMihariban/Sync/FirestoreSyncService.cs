@@ -39,9 +39,13 @@ public sealed class FirestoreSyncService : IDisposable
     private readonly SemaphoreSlim _syncGate = new(1, 1);
     private readonly SemaphoreSlim _authGate = new(1, 1);
     private readonly System.Threading.Timer _pollTimer;
+    private readonly string _remoteCachePath;
     private UsageEvent[] _latestClaude = Array.Empty<UsageEvent>();
     private CodexUsageEvent[] _latestCodex = Array.Empty<CodexUsageEvent>();
     private OllamaUsageEvent[] _latestOllama = Array.Empty<OllamaUsageEvent>();
+    private UsageEvent[] _remoteClaude = Array.Empty<UsageEvent>();
+    private CodexUsageEvent[] _remoteCodex = Array.Empty<CodexUsageEvent>();
+    private OllamaUsageEvent[] _remoteOllama = Array.Empty<OllamaUsageEvent>();
     private string? _idToken;
     private string? _userId;
     private DateTimeOffset _idTokenExpiresAt;
@@ -69,7 +73,11 @@ public sealed class FirestoreSyncService : IDisposable
     {
         _config = FirebaseConfig.Load();
         _client = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("TokenMihariban-Windows/0.3");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("TokenMihariban-Windows/0.4.8");
+        _remoteCachePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "TokenMihariban", "remote-usage-cache.json");
+        LoadRemoteCache();
         _pollTimer = new System.Threading.Timer(_ => _ = SyncLatestAsync(), null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(60));
     }
 
@@ -112,6 +120,7 @@ public sealed class FirestoreSyncService : IDisposable
     {
         var code = GroupId;
         _settings.Remove("syncGroupId");
+        ClearRemoteCache();
         RemoteDataChanged?.Invoke(this, new RemoteUsageData(Array.Empty<UsageEvent>(), Array.Empty<CodexUsageEvent>(), Array.Empty<OllamaUsageEvent>()));
         if (_config is null || code is null) return;
         try
@@ -129,6 +138,7 @@ public sealed class FirestoreSyncService : IDisposable
 
     private void SavePairingCode(string code)
     {
+        if (!string.Equals(GroupId, code, StringComparison.Ordinal)) ClearRemoteCache();
         _settings.SetString("syncGroupId", code);
         _settings.Remove("lastUploadedClaudeEventAt_" + code);
         _settings.Remove("lastUploadedCodexEventAt_" + code);
@@ -149,16 +159,23 @@ public sealed class FirestoreSyncService : IDisposable
         if (!await _syncGate.WaitAsync(0).ConfigureAwait(false)) return false;
         try
         {
+            // Publish the disk cache before touching the network, so remote totals stay
+            // visible while offline or when the shared Firestore quota is recovering.
+            PublishRemoteData();
             var auth = await GetAuthAsync().ConfigureAwait(false);
             await UploadClaudeAsync(code, _latestClaude, auth.IdToken).ConfigureAwait(false);
             await UploadCodexAsync(code, _latestCodex, auth.IdToken).ConfigureAwait(false);
             await UploadOllamaAsync(code, _latestOllama, auth.IdToken).ConfigureAwait(false);
-            var cutoff = DateTime.UtcNow.Subtract(RecentWindow);
-            var remoteClaudeTask = QueryClaudeAsync(code, cutoff, auth.IdToken);
-            var remoteCodexTask = QueryCodexAsync(code, cutoff, auth.IdToken);
-            var remoteOllamaTask = QueryOllamaAsync(code, cutoff, auth.IdToken);
+            var floor = DateTime.UtcNow.Subtract(RecentWindow);
+            var remoteClaudeTask = QueryClaudeAsync(code, NewestOrFloor(_remoteClaude, x => x.Timestamp, floor), auth.IdToken);
+            var remoteCodexTask = QueryCodexAsync(code, NewestOrFloor(_remoteCodex, x => x.Timestamp, floor), auth.IdToken);
+            var remoteOllamaTask = QueryOllamaAsync(code, NewestOrFloor(_remoteOllama, x => x.Timestamp, floor), auth.IdToken);
             await Task.WhenAll(remoteClaudeTask, remoteCodexTask, remoteOllamaTask).ConfigureAwait(false);
-            RemoteDataChanged?.Invoke(this, new RemoteUsageData(remoteClaudeTask.Result, remoteCodexTask.Result, remoteOllamaTask.Result));
+            _remoteClaude = MergeRemote(_remoteClaude, remoteClaudeTask.Result, x => $"{x.SessionId}|{x.Timestamp:O}|{x.ProjectPath}", x => x.Timestamp, floor);
+            _remoteCodex = MergeRemote(_remoteCodex, remoteCodexTask.Result, x => $"{x.SessionId}|{x.Timestamp:O}|{x.ProjectPath}", x => x.Timestamp, floor);
+            _remoteOllama = MergeRemote(_remoteOllama, remoteOllamaTask.Result, x => x.RequestId, x => x.Timestamp, floor);
+            SaveRemoteCache(code);
+            PublishRemoteData();
             return true;
         }
         catch
@@ -170,6 +187,66 @@ public sealed class FirestoreSyncService : IDisposable
         {
             _syncGate.Release();
         }
+    }
+
+    private static DateTime NewestOrFloor<T>(IReadOnlyList<T> events, Func<T, DateTime> timestamp, DateTime floor) =>
+        events.Count == 0 ? floor : events.Max(timestamp).ToUniversalTime();
+
+    private static T[] MergeRemote<T>(
+        IEnumerable<T> existing,
+        IEnumerable<T> incoming,
+        Func<T, string> key,
+        Func<T, DateTime> timestamp,
+        DateTime floor)
+    {
+        var merged = new Dictionary<string, T>(StringComparer.Ordinal);
+        foreach (var item in existing.Concat(incoming).Where(x => timestamp(x).ToUniversalTime() >= floor))
+            merged[key(item)] = item;
+        return merged.Values.OrderBy(timestamp).ToArray();
+    }
+
+    private void PublishRemoteData() =>
+        RemoteDataChanged?.Invoke(this, new RemoteUsageData(_remoteClaude, _remoteCodex, _remoteOllama));
+
+    private sealed record RemoteUsageCacheDocument(
+        string SyncId,
+        UsageEvent[] ClaudeEvents,
+        CodexUsageEvent[] CodexEvents,
+        OllamaUsageEvent[] OllamaEvents);
+
+    private void LoadRemoteCache()
+    {
+        try
+        {
+            if (GroupId is not { } code || !File.Exists(_remoteCachePath)) return;
+            var cache = JsonSerializer.Deserialize<RemoteUsageCacheDocument>(File.ReadAllText(_remoteCachePath));
+            if (cache is null || !string.Equals(cache.SyncId, code, StringComparison.Ordinal)) return;
+            _remoteClaude = cache.ClaudeEvents ?? Array.Empty<UsageEvent>();
+            _remoteCodex = cache.CodexEvents ?? Array.Empty<CodexUsageEvent>();
+            _remoteOllama = cache.OllamaEvents ?? Array.Empty<OllamaUsageEvent>();
+        }
+        catch { }
+    }
+
+    private void SaveRemoteCache(string code)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_remoteCachePath)!);
+            var json = JsonSerializer.Serialize(new RemoteUsageCacheDocument(code, _remoteClaude, _remoteCodex, _remoteOllama));
+            var temporaryPath = _remoteCachePath + ".tmp";
+            File.WriteAllText(temporaryPath, json);
+            File.Move(temporaryPath, _remoteCachePath, true);
+        }
+        catch { }
+    }
+
+    private void ClearRemoteCache()
+    {
+        _remoteClaude = Array.Empty<UsageEvent>();
+        _remoteCodex = Array.Empty<CodexUsageEvent>();
+        _remoteOllama = Array.Empty<OllamaUsageEvent>();
+        try { File.Delete(_remoteCachePath); } catch { }
     }
 
     private async Task CreateGroupAndMembershipAsync(string code, AuthSession auth)
@@ -205,7 +282,7 @@ public sealed class FirestoreSyncService : IDisposable
     private async Task UploadClaudeAsync(string code, IReadOnlyList<UsageEvent> events, string idToken)
     {
         var cutoff = UploadCutoff("lastUploadedClaudeEventAt_" + code);
-        var selected = events.Where(e => e.Timestamp.ToUniversalTime() >= cutoff).OrderBy(e => e.Timestamp).ToArray();
+        var selected = events.Where(e => e.Timestamp.ToUniversalTime() > cutoff).OrderBy(e => e.Timestamp).ToArray();
         if (selected.Length == 0) return;
         var writes = selected.Select(e => WriteDocument(code, "claudeEvents", DocumentId(DeviceId, e.SessionId, e.Timestamp), ClaudeFields(e))).ToArray();
         await CommitInBatchesAsync(writes, idToken).ConfigureAwait(false);
@@ -215,7 +292,7 @@ public sealed class FirestoreSyncService : IDisposable
     private async Task UploadCodexAsync(string code, IReadOnlyList<CodexUsageEvent> events, string idToken)
     {
         var cutoff = UploadCutoff("lastUploadedCodexEventAt_" + code);
-        var selected = events.Where(e => e.Timestamp.ToUniversalTime() >= cutoff).OrderBy(e => e.Timestamp).ToArray();
+        var selected = events.Where(e => e.Timestamp.ToUniversalTime() > cutoff).OrderBy(e => e.Timestamp).ToArray();
         if (selected.Length == 0) return;
         var writes = selected.Select(e => WriteDocument(code, "codexEvents", DocumentId(DeviceId, e.SessionId, e.Timestamp), CodexFields(e))).ToArray();
         await CommitInBatchesAsync(writes, idToken).ConfigureAwait(false);
@@ -225,7 +302,7 @@ public sealed class FirestoreSyncService : IDisposable
     private async Task UploadOllamaAsync(string code, IReadOnlyList<OllamaUsageEvent> events, string idToken)
     {
         var cutoff = UploadCutoff("lastUploadedOllamaEventAt_" + code);
-        var selected = events.Where(e => e.Timestamp.ToUniversalTime() >= cutoff).OrderBy(e => e.Timestamp).ToArray();
+        var selected = events.Where(e => e.Timestamp.ToUniversalTime() > cutoff).OrderBy(e => e.Timestamp).ToArray();
         if (selected.Length == 0) return;
         var writes = selected.Select(e => WriteDocument(code, "ollamaEvents", DocumentId(DeviceId, e.RequestId, e.Timestamp), OllamaFields(e))).ToArray();
         await CommitInBatchesAsync(writes, idToken).ConfigureAwait(false);
