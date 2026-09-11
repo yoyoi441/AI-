@@ -96,7 +96,8 @@ public static class CodexJsonlParser
                     ProjectPath: currentProjectPath
                 ));
 
-                if (payload.TryGetProperty("rate_limits", out var rateLimits))
+                if (payload.TryGetProperty("rate_limits", out var rateLimits) &&
+                    IsGeneralCodexLimit(GetString(rateLimits, "limit_id")))
                 {
                     var planType = GetString(rateLimits, "plan_type");
                     var primary = ParseWindow(rateLimits, "primary", planType);
@@ -110,6 +111,15 @@ public static class CodexJsonlParser
 
         return result;
     }
+
+    /// <summary>
+    /// Codex writes account-wide and model-specific quota families to the same log.
+    /// Only the account-wide <c>codex</c> family belongs in the main gauge; otherwise
+    /// a newly emitted, unused model allowance can incorrectly replace it with 0%.
+    /// Older clients did not include a limit id, so a missing value remains accepted.
+    /// </summary>
+    private static bool IsGeneralCodexLimit(string? limitId) =>
+        string.IsNullOrWhiteSpace(limitId) || string.Equals(limitId.Trim(), "codex", StringComparison.OrdinalIgnoreCase);
 
     private static CodexRateLimitWindow? ParseWindow(JsonElement rateLimits, string propertyName, string? planType)
     {

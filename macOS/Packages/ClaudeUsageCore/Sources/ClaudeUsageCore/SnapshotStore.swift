@@ -11,7 +11,24 @@ public enum SnapshotStore {
     }
 
     private static var containerURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)
+        let fileManager = FileManager.default
+        if let groupURL = fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier),
+           fileManager.fileExists(atPath: groupURL.path),
+           fileManager.isWritableFile(atPath: groupURL.path) {
+            return groupURL
+        }
+
+        // Preview builds are intentionally distributed without an Apple signature.
+        // macOS therefore refuses their App Group entitlement, which previously meant
+        // no snapshot survived a relaunch and the menu-bar gauge briefly returned to
+        // zero while all logs were parsed again. Persist in Application Support as a
+        // main-app fallback; a signed build continues to use the shared group above.
+        guard let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let fallback = support.appendingPathComponent("TokenMihariban", isDirectory: true)
+        try? fileManager.createDirectory(at: fallback, withIntermediateDirectories: true)
+        return fallback
     }
 
     private static var snapshotURL: URL? {

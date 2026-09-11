@@ -56,6 +56,8 @@ final class UsageMonitor: ObservableObject {
     private var latestCodexPrimaryWindow: CodexRateLimitWindow?
     private var latestCodexSecondaryWindow: CodexRateLimitWindow?
     private var latestCodexWindowEventTimestamp: Date?
+    private var lastCodexRateLimitUploadAttempt: (syncId: String, timestamp: Date)?
+    private var codexRateLimitUploadInFlight = false
 
     private let ollamaStore = OllamaUsageStore()
     private let remoteCacheStore = RemoteUsageCacheStore()
@@ -208,6 +210,8 @@ final class UsageMonitor: ObservableObject {
         remoteOllamaTodayTokens = 0
         remoteCacheStore.clear()
         cloudSyncActivationInFlight = false
+        lastCodexRateLimitUploadAttempt = nil
+        codexRateLimitUploadInFlight = false
         startCloudSyncIfPaired()
         refresh()
     }
@@ -543,13 +547,25 @@ final class UsageMonitor: ObservableObject {
         // The Firestore side only overwrites if this is genuinely newer than what's
         // already there, so redundant calls are harmless.
         if FirestoreSync.isAvailable, let syncId = SyncPairing.syncId, let eventTimestamp = latestCodexWindowEventTimestamp {
-            FirestoreSync.uploadCodexRateLimitsIfNewer(
-                primary: latestCodexPrimaryWindow,
-                secondary: latestCodexSecondaryWindow,
-                eventTimestamp: eventTimestamp,
-                syncId: syncId,
-                deviceId: deviceId
-            )
+            let previous = lastCodexRateLimitUploadAttempt
+            if !codexRateLimitUploadInFlight,
+               previous?.syncId != syncId || previous?.timestamp != eventTimestamp {
+                codexRateLimitUploadInFlight = true
+                FirestoreSync.uploadCodexRateLimitsIfNewer(
+                    primary: latestCodexPrimaryWindow,
+                    secondary: latestCodexSecondaryWindow,
+                    eventTimestamp: eventTimestamp,
+                    syncId: syncId,
+                    deviceId: deviceId
+                ) { succeeded in
+                    DispatchQueue.main.async {
+                        self.codexRateLimitUploadInFlight = false
+                        if succeeded {
+                            self.lastCodexRateLimitUploadAttempt = (syncId, eventTimestamp)
+                        }
+                    }
+                }
+            }
         }
 
         let colorHex = UserDefaults.standard.string(forKey: "codexColorHex") ?? CodexSnapshot.empty.colorHex

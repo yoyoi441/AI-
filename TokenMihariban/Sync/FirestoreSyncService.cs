@@ -49,6 +49,8 @@ public sealed class FirestoreSyncService : IDisposable
     private string? _idToken;
     private string? _userId;
     private DateTimeOffset _idTokenExpiresAt;
+    private DateTimeOffset _nextSyncAttempt = DateTimeOffset.MinValue;
+    private int _rateLimitFailureLevel;
     private bool _disposed;
 
     public event EventHandler<RemoteUsageData>? RemoteDataChanged;
@@ -73,7 +75,7 @@ public sealed class FirestoreSyncService : IDisposable
     {
         _config = FirebaseConfig.Load();
         _client = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("TokenMihariban-Windows/0.4.8");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("TokenMihariban-Windows/0.4.9");
         _remoteCachePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "TokenMihariban", "remote-usage-cache.json");
@@ -156,6 +158,7 @@ public sealed class FirestoreSyncService : IDisposable
     public async Task<bool> SyncLatestAsync()
     {
         if (_disposed || _config is null || GroupId is not { } code) return false;
+        if (DateTimeOffset.UtcNow < _nextSyncAttempt) return false;
         if (!await _syncGate.WaitAsync(0).ConfigureAwait(false)) return false;
         try
         {
@@ -176,7 +179,17 @@ public sealed class FirestoreSyncService : IDisposable
             _remoteOllama = MergeRemote(_remoteOllama, remoteOllamaTask.Result, x => x.RequestId, x => x.Timestamp, floor);
             SaveRemoteCache(code);
             PublishRemoteData();
+            _rateLimitFailureLevel = 0;
+            _nextSyncAttempt = DateTimeOffset.MinValue;
             return true;
+        }
+        catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            var delays = new[] { TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15), TimeSpan.FromHours(1), TimeSpan.FromHours(6) };
+            var delay = delays[Math.Min(_rateLimitFailureLevel, delays.Length - 1)];
+            _rateLimitFailureLevel = Math.Min(_rateLimitFailureLevel + 1, delays.Length - 1);
+            _nextSyncAttempt = DateTimeOffset.UtcNow.Add(delay);
+            return false;
         }
         catch
         {

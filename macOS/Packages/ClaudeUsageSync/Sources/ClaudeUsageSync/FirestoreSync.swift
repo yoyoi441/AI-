@@ -48,6 +48,44 @@ private final class EventPollingState<Event>: @unchecked Sendable {
     }
 }
 
+/// Shared circuit breaker for Firestore reads. A free-tier quota exhaustion otherwise
+/// caused every listener to retry once per minute forever (several requests per tick),
+/// delaying recovery and creating tens of thousands of identical 429 responses.
+private final class ReadBackoffState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextAttempt = Date.distantPast
+    private var failureLevel = 0
+    private var lastRateLimitRecorded = Date.distantPast
+    private let delays: [TimeInterval] = [5 * 60, 15 * 60, 60 * 60, 6 * 60 * 60]
+
+    func shouldAttempt(now: Date = Date()) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return now >= nextAttempt
+    }
+
+    /// Returns the newly selected delay when this is the first 429 in a concurrent
+    /// batch, and nil for duplicate responses from sibling requests.
+    func record(status: Int, now: Date = Date()) -> TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        if status == 429 {
+            guard now.timeIntervalSince(lastRateLimitRecorded) > 10 else { return nil }
+            let delay = delays[min(failureLevel, delays.count - 1)]
+            failureLevel = min(failureLevel + 1, delays.count - 1)
+            nextAttempt = now.addingTimeInterval(delay)
+            lastRateLimitRecorded = now
+            return delay
+        }
+        // Do not let a successful sibling from the same concurrent batch erase a 429.
+        if (200...299).contains(status), now >= nextAttempt {
+            failureLevel = 0
+            nextAttempt = .distantPast
+        }
+        return nil
+    }
+}
+
 /// A small removable polling handle with the same lifecycle semantics the app used for
 /// Firestore snapshot listeners. Firestore's REST API has no streaming listener, so the
 /// macOS menu-bar app refreshes remote state immediately and once per minute.
@@ -84,6 +122,7 @@ public final class ListenerRegistration: @unchecked Sendable {
 /// and security rules without linking or starting gRPC.
 public enum FirestoreSync {
     private static let logger = Logger(subsystem: "com.yoyoi441.TokenMihariban", category: "device-sync")
+    private static let readBackoff = ReadBackoffState()
     private struct Config {
         let projectId: String
         let apiKey: String
@@ -433,6 +472,7 @@ public enum FirestoreSync {
         since: Date,
         completion: @escaping ([[String: Any]]) -> Void
     ) {
+        guard readBackoff.shouldAttempt() else { return }
         let body: [String: Any] = [
             "structuredQuery": [
                 "from": [["collectionId": collection]],
@@ -448,6 +488,7 @@ public enum FirestoreSync {
         withSession { result in
             guard case .success(let session) = result else { return }
             request(method: "POST", url: runQueryURL(syncId: syncId), session: session, body: body) { status, object, error in
+                recordReadStatus(status)
                 guard status == 200, let rows = object as? [[String: Any]] else {
                     let detail = object.map { String(describing: $0) }
                         ?? error.map { String(describing: $0) }
@@ -471,17 +512,24 @@ public enum FirestoreSync {
         secondary: CodexRateLimitWindow?,
         eventTimestamp: Date,
         syncId: String,
-        deviceId: String
+        deviceId: String,
+        completion: @escaping (Bool) -> Void = { _ in }
     ) {
-        guard isReady(syncId: syncId) else { return }
+        guard isReady(syncId: syncId) else { completion(false); return }
+        guard readBackoff.shouldAttempt() else { completion(false); return }
         withSession { result in
-            guard case .success(let session) = result else { return }
+            guard case .success(let session) = result else { completion(false); return }
             let path = "syncGroups/\(syncId)/codexRateLimits/latest"
             request(method: "GET", url: documentURL(path: path), session: session) { status, object, _ in
+                recordReadStatus(status)
                 if status == 200,
                    let fields = (object as? [String: Any])?["fields"] as? [String: Any],
                    let existing = dateValue(fields, "eventTimestamp"),
-                   existing >= eventTimestamp { return }
+                   existing >= eventTimestamp { completion(true); return }
+
+                // Only a missing document authorizes creation. A 429, authentication
+                // failure, or network error must never fall through into a PATCH.
+                guard status == 200 || status == 404 else { completion(false); return }
 
                 var fields: [String: Any] = [
                     "deviceId": string(deviceId),
@@ -489,7 +537,7 @@ public enum FirestoreSync {
                 ]
                 if let primary { fields["primary"] = map(rateWindowFields(primary)) }
                 if let secondary { fields["secondary"] = map(rateWindowFields(secondary)) }
-                patchDocument(path: path, fields: fields, session: session) { _ in }
+                patchDocument(path: path, fields: fields, session: session, completion: completion)
             }
         }
     }
@@ -500,9 +548,11 @@ public enum FirestoreSync {
     ) -> ListenerRegistration? {
         guard isReady(syncId: syncId) else { return nil }
         return ListenerRegistration {
+            guard readBackoff.shouldAttempt() else { return }
             withSession { result in
                 guard case .success(let session) = result else { return }
                 request(method: "GET", url: documentURL(path: "syncGroups/\(syncId)/codexRateLimits/latest"), session: session) { status, object, _ in
+                    recordReadStatus(status)
                     guard status == 200,
                           let fields = (object as? [String: Any])?["fields"] as? [String: Any] else {
                         onChange(nil, nil, nil)
@@ -679,6 +729,12 @@ public enum FirestoreSync {
     }
 
     // MARK: - REST transport
+
+    private static func recordReadStatus(_ status: Int) {
+        if let delay = readBackoff.record(status: status) {
+            logger.error("Firestore read quota exceeded; pausing reads for \(Int(delay)) seconds")
+        }
+    }
 
     private static func request(
         method: String,

@@ -26,6 +26,7 @@ public enum CodexJSONLParser {
                 let resets_at: Double?
             }
             struct RateLimits: Decodable {
+                let limit_id: String?
                 let primary: RateLimitWindow?
                 let secondary: RateLimitWindow?
                 let plan_type: String?
@@ -127,7 +128,8 @@ public enum CodexJSONLParser {
                 projectPath: currentProjectPath
             ))
 
-            if let rateLimits = raw.payload?.rate_limits {
+            if let rateLimits = raw.payload?.rate_limits,
+               isGeneralCodexLimit(rateLimits.limit_id) {
                 if let primary = parseWindow(rateLimits.primary, planType: rateLimits.plan_type) {
                     latestPrimary = primary
                 }
@@ -147,5 +149,18 @@ public enum CodexJSONLParser {
             latestWindowEventTimestamp: latestWindowEventTimestamp,
             newOffset: newOffset
         )
+    }
+
+    /// Codex can emit several independent quota families into the same transcript.
+    /// `codex` is the account-wide quota shown by ChatGPT/Codex, while identifiers
+    /// such as `codex_bengalfox` are model-specific allowances. Treating whichever
+    /// family wrote last as the global reading made the menu-bar gauge jump between
+    /// the real account percentage and an unused model allowance at 0%.
+    ///
+    /// Older clients omitted `limit_id`, so a missing/empty value remains compatible.
+    private static func isGeneralCodexLimit(_ limitId: String?) -> Bool {
+        guard let normalized = limitId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !normalized.isEmpty else { return true }
+        return normalized == "codex"
     }
 }
