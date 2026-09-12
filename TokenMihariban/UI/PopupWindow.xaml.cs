@@ -101,8 +101,10 @@ public partial class PopupWindow : Window
         var showClaude = settings.HasKey("showClaudeProvider") ? settings.GetBool("showClaudeProvider", true) : true;
         var showCodex = settings.HasKey("showCodexProvider") ? settings.GetBool("showCodexProvider", true) : true;
         var showOllama = settings.HasKey("showOllamaProvider") ? settings.GetBool("showOllamaProvider", true) : true;
+        var showAITools = (settings.HasKey("showAIToolsProvider") ? settings.GetBool("showAIToolsProvider", true) : true) &&
+            (monitor.AIToolSnapshot.TodayTotalTokens > 0 || monitor.AIToolSnapshot.Last7DaysTotalTokens > 0);
 
-        var overview = BuildProviderOverview(monitor.Snapshot, monitor.CodexSnapshot, monitor.OllamaSnapshot, settings, showClaude, showCodex, showOllama);
+        var overview = BuildProviderOverview(monitor.Snapshot, monitor.CodexSnapshot, monitor.OllamaSnapshot, monitor.AIToolSnapshot, settings, showClaude, showCodex, showOllama, showAITools);
         if (overview is not null)
         {
             RootPanel.Children.Add(overview);
@@ -114,16 +116,23 @@ public partial class PopupWindow : Window
         if (showCodex) RootPanel.Children.Add(BuildCodexCard(monitor.CodexSnapshot, settings, lang));
         if (showOllama && (showClaude || showCodex)) RootPanel.Children.Add(new Border { Height = 12 });
         if (showOllama) RootPanel.Children.Add(BuildOllamaCard(monitor.OllamaSnapshot, settings, lang));
+        if (showAITools)
+        {
+            RootPanel.Children.Add(new Border { Height = 12 });
+            RootPanel.Children.Add(BuildAIToolsCard(monitor.AIToolSnapshot, settings, lang));
+        }
     }
 
     private static FrameworkElement? BuildProviderOverview(
         UsageSnapshot claude,
         CodexSnapshot codex,
         OllamaSnapshot ollama,
+        AIToolSnapshot aiTools,
         AppSettings settings,
         bool showClaude,
         bool showCodex,
-        bool showOllama)
+        bool showOllama,
+        bool showAITools)
     {
         var metric = GaugeMetricExtensions.FromStorageValue(settings.GetString("menuBarMetric"));
         var useGradient = settings.HasKey("gaugeUseGradient") ? settings.GetBool("gaugeUseGradient", true) : true;
@@ -153,6 +162,13 @@ public partial class PopupWindow : Window
             var fraction = ollama.TargetFraction ?? 1;
             var center = ollama.TargetFraction is null ? CompactTokens(ollama.TodayTotalTokens) : $"{Math.Round(fraction * 100)}%";
             rings.Add(GaugeControls.Ring(fraction, color, useGradient, center, "Ollama", 76));
+        }
+        if (showAITools && aiTools.TodayTotalTokens > 0)
+        {
+            var color = GaugeControls.ParseColor(aiTools.ColorHex, Colors.MediumPurple);
+            var fraction = aiTools.TargetFraction ?? 1;
+            var center = aiTools.TargetFraction is null ? CompactTokens(aiTools.TodayTotalTokens) : $"{Math.Round(fraction * 100)}%";
+            rings.Add(GaugeControls.Ring(fraction, color, useGradient, center, L.String("aiToolsTitle", Lang()), 76));
         }
 
         return rings.Count == 0 ? null : WrapGauges(rings, isRing: true);
@@ -357,6 +373,42 @@ public partial class PopupWindow : Window
         if (!settings.HasKey("showLast7Days") || settings.GetBool("showLast7Days", true))
             stack.Children.Add(new TextBlock { Text = L.String("last7DaysFormat", lang, FormatTokens(snapshot.Last7DaysTotalTokens)), FontSize = 11, Opacity = 0.65, Margin = new Thickness(0, 8, 0, 0) });
 
+        return Card(stack);
+    }
+
+    private FrameworkElement BuildAIToolsCard(AIToolSnapshot snapshot, AppSettings settings, AppLanguage lang)
+    {
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock { Text = L.String("aiToolsTitle", lang), FontSize = 14, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 8) });
+        var color = GaugeControls.ParseColor(snapshot.ColorHex, Colors.MediumPurple);
+        var useGradient = settings.HasKey("gaugeUseGradient") ? settings.GetBool("gaugeUseGradient", true) : true;
+        var isRing = GaugeDisplayStyleExtensions.FromStorageValue(settings.GetString("gaugeStyle")) == GaugeDisplayStyle.Ring;
+        var fraction = snapshot.TargetFraction ?? (snapshot.TodayTotalTokens > 0 ? 1 : 0);
+        var caption = snapshot.DailyTokenTarget > 0
+            ? $"{FormatTokens(snapshot.TodayTotalTokens)} / {FormatTokens((long)snapshot.DailyTokenTarget)}"
+            : L.String("aiToolsNoTargetCaption", lang);
+        if (isRing)
+        {
+            var center = snapshot.TargetFraction is null ? CompactTokens(snapshot.TodayTotalTokens) : $"{Math.Round(fraction * 100)}%";
+            stack.Children.Add(GaugeControls.Ring(fraction, snapshot.TargetFraction is not null && fraction >= 1 ? Colors.Red : color, useGradient, center, caption));
+        }
+        else stack.Children.Add(GaugeControls.Bar(fraction, color, useGradient, L.String("dailyTargetGaugeCaption", lang), caption));
+
+        var summary = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
+        summary.Children.Add(new TextBlock { Text = L.String("today", lang), FontSize = 12, FontWeight = FontWeights.Bold });
+        summary.Children.Add(new TextBlock { Text = L.String("totalTokensFormat", lang, FormatTokens(snapshot.TodayTotalTokens)), FontSize = 12 });
+        if (!settings.HasKey("showModelBreakdown") || settings.GetBool("showModelBreakdown", true))
+            foreach (var entry in snapshot.TodayBreakdown)
+                summary.Children.Add(new TextBlock { Text = L.String("modelBreakdownLineFormat", lang, entry.DisplayName, FormatTokens(entry.Tokens)), FontSize = 11, Opacity = 0.65 });
+        summary.Children.Add(new TextBlock { Text = L.String("aiToolsPrivacyNote", lang), FontSize = 10, Opacity = 0.65, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) });
+        stack.Children.Add(summary);
+        if (settings.GetBool("showHourlyChart", true) && snapshot.HourlyTokensToday.Count > 0)
+        {
+            stack.Children.Add(new TextBlock { Text = L.String("hourlyChartTitle", lang), FontSize = 12, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, 4) });
+            stack.Children.Add(SimpleBarChart.Build(snapshot.HourlyTokensToday.Select(p => (double)p.Tokens).ToList(), color));
+        }
+        if (!settings.HasKey("showLast7Days") || settings.GetBool("showLast7Days", true))
+            stack.Children.Add(new TextBlock { Text = L.String("last7DaysFormat", lang, FormatTokens(snapshot.Last7DaysTotalTokens)), FontSize = 11, Opacity = 0.65, Margin = new Thickness(0, 8, 0, 0) });
         return Card(stack);
     }
 

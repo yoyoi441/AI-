@@ -8,7 +8,7 @@ using TokenMihariban.Models;
 namespace TokenMihariban.Logic;
 
 /// <summary>
-/// One Claude Code, Codex, or Ollama call, flattened into a single exportable row.
+/// One supported AI tool call, flattened into a single exportable row.
 /// Port of the Mac/iOS/Android `UsageExportRow` — kept as raw per-event rows (not
 /// pre-aggregated by day/model) so a spreadsheet or script on the receiving end can
 /// group/pivot however the user actually needs.
@@ -23,6 +23,7 @@ public sealed record UsageExportRow(
     long OutputTokens,
     long CacheCreationTokens,
     long CacheReadTokens,
+    long ReasoningTokens,
     long TotalTokens,
     double? EstimatedCostUSD);
 
@@ -32,7 +33,7 @@ public sealed record UsageExportRow(
 /// </summary>
 public static class UsageExporter
 {
-    public static List<UsageExportRow> Rows(IReadOnlyList<UsageEvent> claudeEvents, IReadOnlyList<CodexUsageEvent> codexEvents, IReadOnlyList<OllamaUsageEvent> ollamaEvents, DateTime start, DateTime end)
+    public static List<UsageExportRow> Rows(IReadOnlyList<UsageEvent> claudeEvents, IReadOnlyList<CodexUsageEvent> codexEvents, IReadOnlyList<OllamaUsageEvent> ollamaEvents, IReadOnlyList<AIToolUsageEvent> aiToolEvents, DateTime start, DateTime end)
     {
         var claudeRows = claudeEvents
             .Where(e => e.Timestamp >= start && e.Timestamp <= end)
@@ -46,6 +47,7 @@ public static class UsageExporter
                 e.OutputTokens,
                 e.CacheCreationTokens,
                 e.CacheReadTokens,
+                0,
                 e.TotalTokens,
                 PricingTable.EstimatedCostUSD(e.Model, e.InputTokens, e.OutputTokens, e.CacheCreationTokens, e.CacheReadTokens)));
 
@@ -60,6 +62,7 @@ public static class UsageExporter
                 e.InputTokens,
                 e.OutputTokens,
                 e.CachedInputTokens,
+                0,
                 0,
                 e.TotalTokens,
                 null));
@@ -76,16 +79,34 @@ public static class UsageExporter
                 e.OutputTokens,
                 0,
                 0,
+                0,
                 e.TotalTokens,
                 e.Source == OllamaUsageSource.Cloud ? OllamaUsageComputer.EstimatedCloudCostUSD(e.Model, e.InputTokens, e.OutputTokens) : null));
 
-        return claudeRows.Concat(codexRows).Concat(ollamaRows).OrderBy(r => r.Timestamp).ToList();
+        var aiToolRows = aiToolEvents
+            .Where(e => e.Timestamp >= start && e.Timestamp <= end)
+            .Select(e => new UsageExportRow(
+                e.Timestamp,
+                e.Tool == AIToolKind.OpenCode && !string.IsNullOrWhiteSpace(e.Provider) && e.Provider != "unknown"
+                    ? $"OpenCode ({e.Provider})" : e.Tool.DisplayName(),
+                e.Model,
+                e.ProjectPath,
+                e.SessionId,
+                e.InputTokens,
+                e.OutputTokens,
+                0,
+                e.CachedTokens,
+                e.ReasoningTokens,
+                e.TotalTokens,
+                null));
+
+        return claudeRows.Concat(codexRows).Concat(ollamaRows).Concat(aiToolRows).OrderBy(r => r.Timestamp).ToList();
     }
 
     public static string Csv(IReadOnlyList<UsageExportRow> rows)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("timestamp,provider,model,project,sessionId,inputTokens,outputTokens,cacheCreationTokens,cacheReadTokens,totalTokens,estimatedCostUSD");
+        sb.AppendLine("timestamp,provider,model,project,sessionId,inputTokens,outputTokens,cacheCreationTokens,cacheReadTokens,reasoningTokens,totalTokens,estimatedCostUSD");
         foreach (var row in rows)
         {
             var cost = row.EstimatedCostUSD?.ToString("F4", CultureInfo.InvariantCulture) ?? "";
@@ -100,6 +121,7 @@ public static class UsageExporter
                 row.OutputTokens.ToString(CultureInfo.InvariantCulture),
                 row.CacheCreationTokens.ToString(CultureInfo.InvariantCulture),
                 row.CacheReadTokens.ToString(CultureInfo.InvariantCulture),
+                row.ReasoningTokens.ToString(CultureInfo.InvariantCulture),
                 row.TotalTokens.ToString(CultureInfo.InvariantCulture),
                 cost
             };
@@ -132,6 +154,7 @@ public static class UsageExporter
             sb.Append($"    \"outputTokens\": {row.OutputTokens},\n");
             sb.Append($"    \"cacheCreationTokens\": {row.CacheCreationTokens},\n");
             sb.Append($"    \"cacheReadTokens\": {row.CacheReadTokens},\n");
+            sb.Append($"    \"reasoningTokens\": {row.ReasoningTokens},\n");
             sb.Append($"    \"totalTokens\": {row.TotalTokens},\n");
             sb.Append($"    \"estimatedCostUSD\": {cost}\n");
             sb.Append(i == rows.Count - 1 ? "  }\n" : "  },\n");

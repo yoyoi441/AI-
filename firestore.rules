@@ -107,6 +107,31 @@ service cloud.firestore {
         && event.requestId.size() <= 100;
     }
 
+    function validAIToolEvent(groupId) {
+      let data = request.resource.data;
+      let event = data.event;
+      return data.keys().hasOnly(['deviceId', 'event'])
+        && data.deviceId == memberDeviceId(groupId)
+        && event.keys().hasOnly([
+          'timestamp', 'tool', 'provider', 'model', 'inputTokens', 'outputTokens',
+          'cachedTokens', 'reasoningTokens', 'totalTokens', 'eventId', 'sessionId', 'projectPath'
+        ])
+        && event.timestamp is timestamp
+        && event.timestamp >= request.time - duration.value(10, 'd')
+        && event.timestamp <= request.time + duration.value(5, 'm')
+        && event.tool in ['gemini-cli', 'opencode']
+        && event.provider is string && event.provider.size() <= 200
+        && event.model is string && event.model.size() <= 200
+        && validTokenCount(event.inputTokens)
+        && validTokenCount(event.outputTokens)
+        && validTokenCount(event.cachedTokens)
+        && validTokenCount(event.reasoningTokens)
+        && validTokenCount(event.totalTokens)
+        && event.eventId is string && event.eventId.size() >= 1 && event.eventId.size() <= 600
+        && event.sessionId is string && event.sessionId.size() <= 512
+        && event.projectPath is string && event.projectPath.size() <= 2048;
+    }
+
     match /syncGroups/{groupId} {
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly(['ownerUid', 'createdAt', 'schemaVersion'])
@@ -141,6 +166,12 @@ service cloud.firestore {
       match /ollamaEvents/{eventId} {
         allow read: if isMember(groupId);
         allow create, update: if isMember(groupId) && validOllamaEvent(groupId);
+        allow delete: if isMember(groupId) && resource.data.deviceId == memberDeviceId(groupId);
+      }
+
+      match /aiToolEvents/{eventId} {
+        allow read: if isMember(groupId);
+        allow create, update: if isMember(groupId) && validAIToolEvent(groupId);
         allow delete: if isMember(groupId) && resource.data.deviceId == memberDeviceId(groupId);
       }
 

@@ -148,6 +148,36 @@ test("参加端末は本文を含まない妥当なOllama使用量だけを書�
   }));
 });
 
+test("参加端末は本文を含まない妥当なAIツール使用量だけを書ける", async () => {
+  const owner = testEnv.authenticatedContext("owner").firestore();
+  const validEvent = {
+    deviceId: "owner-device-0001",
+    event: {
+      timestamp: Timestamp.now(),
+      tool: "gemini-cli",
+      provider: "google",
+      model: "gemini-2.5-pro",
+      inputTokens: 120,
+      outputTokens: 45,
+      cachedTokens: 20,
+      reasoningTokens: 5,
+      totalTokens: 170,
+      eventId: "gemini:session-1:message-1",
+      sessionId: "session-1",
+      projectPath: "/project",
+    },
+  };
+  await assertSucceeds(setDoc(doc(owner, "syncGroups", groupId, "aiToolEvents", "event-1"), validEvent));
+  await assertFails(setDoc(doc(owner, "syncGroups", groupId, "aiToolEvents", "with-prompt"), {
+    ...validEvent,
+    event: { ...validEvent.event, prompt: "同期してはいけない本文" },
+  }));
+  await assertFails(setDoc(doc(owner, "syncGroups", groupId, "aiToolEvents", "unknown-tool"), {
+    ...validEvent,
+    event: { ...validEvent.event, tool: "unknown" },
+  }));
+});
+
 test("端末は自分のメンバー登録を削除して同期解除できる", async () => {
   const owner = testEnv.authenticatedContext("owner").firestore();
   const memberRef = doc(owner, "syncGroups", groupId, "members", "owner");

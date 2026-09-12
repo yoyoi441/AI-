@@ -194,6 +194,7 @@ private struct AppearanceSettingsTab: View, LocalizedView {
     @AppStorage("gaugeStyle") private var gaugeStyle: GaugeDisplayStyle = GaugeAppearance.default.style
     @AppStorage("codexColorHex") private var codexColorHex: String = CodexSnapshot.empty.colorHex
     @AppStorage("ollamaColorHex") private var ollamaColorHex: String = OllamaSnapshot.empty.colorHex
+    @AppStorage("aiToolsColorHex") private var aiToolsColorHex: String = AIToolSnapshot.empty.colorHex
     @AppStorage("menuBarMetric") private var menuBarMetricRaw = GaugeMetric.tokenUsage.rawValue
     @AppStorage(AppLanguagePreference.storageKey) private var appLanguageRaw = AppLanguage.japanese.rawValue
     var lang: AppLanguage { AppLanguagePreference.resolve(from: appLanguageRaw) }
@@ -216,6 +217,13 @@ private struct AppearanceSettingsTab: View, LocalizedView {
         Binding(
             get: { Color(hex: ollamaColorHex) ?? .orange },
             set: { ollamaColorHex = $0.hexString }
+        )
+    }
+
+    private var aiToolsColorBinding: Binding<Color> {
+        Binding(
+            get: { Color(hex: aiToolsColorHex) ?? .purple },
+            set: { aiToolsColorHex = $0.hexString }
         )
     }
 
@@ -265,6 +273,11 @@ private struct AppearanceSettingsTab: View, LocalizedView {
                     monitor.refresh()
                     monitor.pushAppearanceSettingsIfPaired()
                 }
+
+                ColorPicker(selection: aiToolsColorBinding, supportsOpacity: false) {
+                    Label(t("aiToolsColorLabel"), systemImage: "paintpalette.fill")
+                }
+                .onChange(of: aiToolsColorHex) { _, _ in monitor.refresh() }
 
                 Toggle(isOn: $gaugeUseGradient) {
                     Label(t("gradientToggle"), systemImage: "square.fill.on.square.fill")
@@ -356,6 +369,7 @@ private struct DisplayItemsSettingsTab: View, LocalizedView {
     @AppStorage("showClaudeProvider") private var showClaudeProvider = true
     @AppStorage("showCodexProvider") private var showCodexProvider = true
     @AppStorage("showOllamaProvider") private var showOllamaProvider = true
+    @AppStorage("showAIToolsProvider") private var showAIToolsProvider = true
     @AppStorage("showTimeGauge") private var showTimeGauge = true
     @AppStorage("showTokenGauge") private var showTokenGauge = true
     @AppStorage("showTodaySummary") private var showTodaySummary = true
@@ -382,6 +396,9 @@ private struct DisplayItemsSettingsTab: View, LocalizedView {
                     Label(t("showOllamaProviderToggle"), systemImage: "server.rack")
                 }
                 .onChange(of: showOllamaProvider) { _, _ in monitor.pushAppearanceSettingsIfPaired() }
+                Toggle(isOn: $showAIToolsProvider) {
+                    Label(t("showAIToolsProviderToggle"), systemImage: "sparkles")
+                }
             } header: {
                 Text(t("providersHeader"))
             } footer: {
@@ -596,7 +613,7 @@ private struct SyncSettingsTab: View, LocalizedView {
 
 private struct TokenTargetSettingsTab: View, LocalizedView {
     private enum TargetField: Hashable {
-        case manualBlock, claudeDaily, codexDaily, ollamaDaily, claudeWindow, codexWindow
+        case manualBlock, claudeDaily, codexDaily, ollamaDaily, aiToolsDaily, claudeWindow, codexWindow
     }
 
     @ObservedObject var monitor: UsageMonitor
@@ -606,6 +623,7 @@ private struct TokenTargetSettingsTab: View, LocalizedView {
     @AppStorage("claudeDailyTokenTarget") private var claudeDailyTokenTarget: Double = 0
     @AppStorage("codexDailyTokenTarget") private var codexDailyTokenTarget: Double = 0
     @AppStorage("ollamaDailyTokenTarget") private var ollamaDailyTokenTarget: Double = 0
+    @AppStorage("aiToolsDailyTokenTarget") private var aiToolsDailyTokenTarget: Double = 0
     @AppStorage("claudeWindowTokenTarget") private var claudeWindowTokenTarget: Double = 0
     @AppStorage("codexWindowTokenTarget") private var codexWindowTokenTarget: Double = 0
     @AppStorage("customWindowStartMinute") private var customWindowStartMinute: Int = DailyTimeWindow.default.startMinute
@@ -661,6 +679,9 @@ private struct TokenTargetSettingsTab: View, LocalizedView {
                     TextField(t("ollamaDailyTargetPlaceholder"), value: $ollamaDailyTokenTarget, format: .number)
                         .textFieldStyle(.roundedBorder)
                         .focused($focusedField, equals: .ollamaDaily)
+                    TextField(t("aiToolsDailyTargetPlaceholder"), value: $aiToolsDailyTokenTarget, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focusedField, equals: .aiToolsDaily)
                     Text(t("dailyTargetNote"))
                         .font(.callout)
                         .foregroundStyle(.secondary)

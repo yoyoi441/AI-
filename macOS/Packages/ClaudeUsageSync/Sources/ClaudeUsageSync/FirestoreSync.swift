@@ -349,6 +349,22 @@ public enum FirestoreSync {
         )
     }
 
+    public static func uploadAIToolEvents(
+        _ events: [AIToolUsageEvent], syncId: String, deviceId: String,
+        completion: @escaping (Bool) -> Void = { _ in }
+    ) {
+        upload(
+            events.map { event in
+                write(
+                    path: "syncGroups/\(syncId)/aiToolEvents/\(documentId(deviceId: deviceId, sessionId: event.eventId, timestamp: event.timestamp))",
+                    fields: ["deviceId": string(deviceId), "event": map(aiToolFields(event))]
+                )
+            },
+            syncId: syncId,
+            completion: completion
+        )
+    }
+
     private static func upload(_ writes: [[String: Any]], syncId: String, completion: @escaping (Bool) -> Void) {
         guard isReady(syncId: syncId), !writes.isEmpty else { completion(false); return }
         withSession { result in
@@ -459,6 +475,44 @@ public enum FirestoreSync {
                         totalDurationNanoseconds: Int64(intValue(event, "totalDurationNanoseconds")),
                         source: OllamaUsageSource(rawValue: stringValue(event, "source")) ?? .local,
                         requestId: stringValue(event, "requestId")
+                    )
+                }
+                onChange(state.merge(events, oldestAllowed: recentEventsCutoff))
+            }
+        }
+    }
+
+    public static func observeAIToolEvents(
+        syncId: String, excludingDeviceId: String,
+        initialEvents: [AIToolUsageEvent] = [],
+        onChange: @escaping ([AIToolUsageEvent]) -> Void
+    ) -> ListenerRegistration? {
+        guard isReady(syncId: syncId) else { return nil }
+        let state = EventPollingState(
+            initial: initialEvents,
+            fallbackCutoff: recentEventsCutoff,
+            key: { $0.eventId },
+            timestamp: { $0.timestamp }
+        )
+        return ListenerRegistration {
+            queryEvents(syncId: syncId, collection: "aiToolEvents", since: state.cutoff()) { rows in
+                let events = rows.compactMap { fields -> AIToolUsageEvent? in
+                    guard stringValue(fields, "deviceId") != excludingDeviceId,
+                          let event = mapFields(fields, "event"),
+                          let date = dateValue(event, "timestamp") else { return nil }
+                    return AIToolUsageEvent(
+                        timestamp: date,
+                        tool: AIToolKind(rawValue: stringValue(event, "tool")) ?? .geminiCLI,
+                        provider: stringValue(event, "provider", fallback: "unknown"),
+                        model: stringValue(event, "model", fallback: "unknown"),
+                        inputTokens: intValue(event, "inputTokens"),
+                        outputTokens: intValue(event, "outputTokens"),
+                        cachedTokens: intValue(event, "cachedTokens"),
+                        reasoningTokens: intValue(event, "reasoningTokens"),
+                        totalTokens: intValue(event, "totalTokens"),
+                        eventId: stringValue(event, "eventId"),
+                        sessionId: stringValue(event, "sessionId"),
+                        projectPath: stringValue(event, "projectPath", fallback: "unknown")
                     )
                 }
                 onChange(state.merge(events, oldestAllowed: recentEventsCutoff))
@@ -875,6 +929,23 @@ public enum FirestoreSync {
             "totalDurationNanoseconds": integer(event.totalDurationNanoseconds),
             "source": string(event.source.rawValue),
             "requestId": string(event.requestId)
+        ]
+    }
+
+    private static func aiToolFields(_ event: AIToolUsageEvent) -> [String: Any] {
+        [
+            "timestamp": timestamp(event.timestamp),
+            "tool": string(event.tool.rawValue),
+            "provider": string(event.provider),
+            "model": string(event.model),
+            "inputTokens": integer(event.inputTokens),
+            "outputTokens": integer(event.outputTokens),
+            "cachedTokens": integer(event.cachedTokens),
+            "reasoningTokens": integer(event.reasoningTokens),
+            "totalTokens": integer(event.totalTokens),
+            "eventId": string(event.eventId),
+            "sessionId": string(event.sessionId),
+            "projectPath": string(event.projectPath)
         ]
     }
 

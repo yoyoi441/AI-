@@ -19,7 +19,8 @@ namespace TokenMihariban.Sync;
 public sealed record RemoteUsageData(
     IReadOnlyList<UsageEvent> ClaudeEvents,
     IReadOnlyList<CodexUsageEvent> CodexEvents,
-    IReadOnlyList<OllamaUsageEvent> OllamaEvents);
+    IReadOnlyList<OllamaUsageEvent> OllamaEvents,
+    IReadOnlyList<AIToolUsageEvent> AIToolEvents);
 
 /// <summary>
 /// Opt-in cross-device sync backed by Firebase Authentication and Firestore.
@@ -43,9 +44,11 @@ public sealed class FirestoreSyncService : IDisposable
     private UsageEvent[] _latestClaude = Array.Empty<UsageEvent>();
     private CodexUsageEvent[] _latestCodex = Array.Empty<CodexUsageEvent>();
     private OllamaUsageEvent[] _latestOllama = Array.Empty<OllamaUsageEvent>();
+    private AIToolUsageEvent[] _latestAITools = Array.Empty<AIToolUsageEvent>();
     private UsageEvent[] _remoteClaude = Array.Empty<UsageEvent>();
     private CodexUsageEvent[] _remoteCodex = Array.Empty<CodexUsageEvent>();
     private OllamaUsageEvent[] _remoteOllama = Array.Empty<OllamaUsageEvent>();
+    private AIToolUsageEvent[] _remoteAITools = Array.Empty<AIToolUsageEvent>();
     private string? _idToken;
     private string? _userId;
     private DateTimeOffset _idTokenExpiresAt;
@@ -75,7 +78,7 @@ public sealed class FirestoreSyncService : IDisposable
     {
         _config = FirebaseConfig.Load();
         _client = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("TokenMihariban-Windows/0.4.9");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("TokenMihariban-Windows/0.5.0");
         _remoteCachePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "TokenMihariban", "remote-usage-cache.json");
@@ -123,7 +126,7 @@ public sealed class FirestoreSyncService : IDisposable
         var code = GroupId;
         _settings.Remove("syncGroupId");
         ClearRemoteCache();
-        RemoteDataChanged?.Invoke(this, new RemoteUsageData(Array.Empty<UsageEvent>(), Array.Empty<CodexUsageEvent>(), Array.Empty<OllamaUsageEvent>()));
+        RemoteDataChanged?.Invoke(this, new RemoteUsageData(Array.Empty<UsageEvent>(), Array.Empty<CodexUsageEvent>(), Array.Empty<OllamaUsageEvent>(), Array.Empty<AIToolUsageEvent>()));
         if (_config is null || code is null) return;
         try
         {
@@ -145,13 +148,15 @@ public sealed class FirestoreSyncService : IDisposable
         _settings.Remove("lastUploadedClaudeEventAt_" + code);
         _settings.Remove("lastUploadedCodexEventAt_" + code);
         _settings.Remove("lastUploadedOllamaEventAt_" + code);
+        _settings.Remove("lastUploadedAIToolEventAt_" + code);
     }
 
-    public void UpdateLocalEvents(IEnumerable<UsageEvent> claudeEvents, IEnumerable<CodexUsageEvent> codexEvents, IEnumerable<OllamaUsageEvent> ollamaEvents)
+    public void UpdateLocalEvents(IEnumerable<UsageEvent> claudeEvents, IEnumerable<CodexUsageEvent> codexEvents, IEnumerable<OllamaUsageEvent> ollamaEvents, IEnumerable<AIToolUsageEvent> aiToolEvents)
     {
         _latestClaude = claudeEvents.ToArray();
         _latestCodex = codexEvents.ToArray();
         _latestOllama = ollamaEvents.ToArray();
+        _latestAITools = aiToolEvents.ToArray();
         _ = SyncLatestAsync();
     }
 
@@ -169,14 +174,17 @@ public sealed class FirestoreSyncService : IDisposable
             await UploadClaudeAsync(code, _latestClaude, auth.IdToken).ConfigureAwait(false);
             await UploadCodexAsync(code, _latestCodex, auth.IdToken).ConfigureAwait(false);
             await UploadOllamaAsync(code, _latestOllama, auth.IdToken).ConfigureAwait(false);
+            await UploadAIToolsAsync(code, _latestAITools, auth.IdToken).ConfigureAwait(false);
             var floor = DateTime.UtcNow.Subtract(RecentWindow);
             var remoteClaudeTask = QueryClaudeAsync(code, NewestOrFloor(_remoteClaude, x => x.Timestamp, floor), auth.IdToken);
             var remoteCodexTask = QueryCodexAsync(code, NewestOrFloor(_remoteCodex, x => x.Timestamp, floor), auth.IdToken);
             var remoteOllamaTask = QueryOllamaAsync(code, NewestOrFloor(_remoteOllama, x => x.Timestamp, floor), auth.IdToken);
-            await Task.WhenAll(remoteClaudeTask, remoteCodexTask, remoteOllamaTask).ConfigureAwait(false);
+            var remoteAIToolsTask = QueryAIToolsAsync(code, NewestOrFloor(_remoteAITools, x => x.Timestamp, floor), auth.IdToken);
+            await Task.WhenAll(remoteClaudeTask, remoteCodexTask, remoteOllamaTask, remoteAIToolsTask).ConfigureAwait(false);
             _remoteClaude = MergeRemote(_remoteClaude, remoteClaudeTask.Result, x => $"{x.SessionId}|{x.Timestamp:O}|{x.ProjectPath}", x => x.Timestamp, floor);
             _remoteCodex = MergeRemote(_remoteCodex, remoteCodexTask.Result, x => $"{x.SessionId}|{x.Timestamp:O}|{x.ProjectPath}", x => x.Timestamp, floor);
             _remoteOllama = MergeRemote(_remoteOllama, remoteOllamaTask.Result, x => x.RequestId, x => x.Timestamp, floor);
+            _remoteAITools = MergeRemote(_remoteAITools, remoteAIToolsTask.Result, x => x.EventId, x => x.Timestamp, floor);
             SaveRemoteCache(code);
             PublishRemoteData();
             _rateLimitFailureLevel = 0;
@@ -219,13 +227,15 @@ public sealed class FirestoreSyncService : IDisposable
     }
 
     private void PublishRemoteData() =>
-        RemoteDataChanged?.Invoke(this, new RemoteUsageData(_remoteClaude, _remoteCodex, _remoteOllama));
+        RemoteDataChanged?.Invoke(this, new RemoteUsageData(_remoteClaude, _remoteCodex, _remoteOllama, _remoteAITools));
 
     private sealed record RemoteUsageCacheDocument(
         string SyncId,
         UsageEvent[] ClaudeEvents,
         CodexUsageEvent[] CodexEvents,
-        OllamaUsageEvent[] OllamaEvents);
+        OllamaUsageEvent[] OllamaEvents,
+        AIToolUsageEvent[]? AIToolEvents = null);
+
 
     private void LoadRemoteCache()
     {
@@ -237,6 +247,7 @@ public sealed class FirestoreSyncService : IDisposable
             _remoteClaude = cache.ClaudeEvents ?? Array.Empty<UsageEvent>();
             _remoteCodex = cache.CodexEvents ?? Array.Empty<CodexUsageEvent>();
             _remoteOllama = cache.OllamaEvents ?? Array.Empty<OllamaUsageEvent>();
+            _remoteAITools = cache.AIToolEvents ?? Array.Empty<AIToolUsageEvent>();
         }
         catch { }
     }
@@ -246,7 +257,7 @@ public sealed class FirestoreSyncService : IDisposable
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_remoteCachePath)!);
-            var json = JsonSerializer.Serialize(new RemoteUsageCacheDocument(code, _remoteClaude, _remoteCodex, _remoteOllama));
+            var json = JsonSerializer.Serialize(new RemoteUsageCacheDocument(code, _remoteClaude, _remoteCodex, _remoteOllama, _remoteAITools));
             var temporaryPath = _remoteCachePath + ".tmp";
             File.WriteAllText(temporaryPath, json);
             File.Move(temporaryPath, _remoteCachePath, true);
@@ -259,6 +270,7 @@ public sealed class FirestoreSyncService : IDisposable
         _remoteClaude = Array.Empty<UsageEvent>();
         _remoteCodex = Array.Empty<CodexUsageEvent>();
         _remoteOllama = Array.Empty<OllamaUsageEvent>();
+        _remoteAITools = Array.Empty<AIToolUsageEvent>();
         try { File.Delete(_remoteCachePath); } catch { }
     }
 
@@ -320,6 +332,16 @@ public sealed class FirestoreSyncService : IDisposable
         var writes = selected.Select(e => WriteDocument(code, "ollamaEvents", DocumentId(DeviceId, e.RequestId, e.Timestamp), OllamaFields(e))).ToArray();
         await CommitInBatchesAsync(writes, idToken).ConfigureAwait(false);
         SaveWatermark("lastUploadedOllamaEventAt_" + code, selected.Max(e => e.Timestamp));
+    }
+
+    private async Task UploadAIToolsAsync(string code, IReadOnlyList<AIToolUsageEvent> events, string idToken)
+    {
+        var cutoff = UploadCutoff("lastUploadedAIToolEventAt_" + code);
+        var selected = events.Where(e => e.Timestamp.ToUniversalTime() > cutoff).OrderBy(e => e.Timestamp).ToArray();
+        if (selected.Length == 0) return;
+        var writes = selected.Select(e => WriteDocument(code, "aiToolEvents", DocumentId(DeviceId, e.EventId, e.Timestamp), AIToolFields(e))).ToArray();
+        await CommitInBatchesAsync(writes, idToken).ConfigureAwait(false);
+        SaveWatermark("lastUploadedAIToolEventAt_" + code, selected.Max(e => e.Timestamp));
     }
 
     private DateTime UploadCutoff(string key)
@@ -392,6 +414,24 @@ public sealed class FirestoreSyncService : IDisposable
                     ? OllamaUsageSource.Cloud : OllamaUsageSource.Local;
                 result.Add(new OllamaUsageEvent(timestamp, StringValue(e, "model", "unknown"), IntValue(e, "inputTokens"),
                     IntValue(e, "outputTokens"), IntValue(e, "totalDurationNanoseconds"), source, StringValue(e, "requestId")));
+            }
+        }
+        return result;
+    }
+
+    private async Task<IReadOnlyList<AIToolUsageEvent>> QueryAIToolsAsync(string code, DateTime cutoff, string idToken)
+    {
+        using var response = await RunQueryAsync(code, "aiToolEvents", cutoff, idToken).ConfigureAwait(false);
+        var result = new List<AIToolUsageEvent>();
+        foreach (var fields in DocumentFields(response))
+        {
+            if (StringValue(fields, "deviceId") == DeviceId || !MapValue(fields, "event", out var e)) continue;
+            if (TryDate(e, "timestamp", out var timestamp))
+            {
+                result.Add(new AIToolUsageEvent(timestamp, AIToolKindExtensions.FromStorageValue(StringValue(e, "tool")),
+                    StringValue(e, "provider", "unknown"), StringValue(e, "model", "unknown"), IntValue(e, "inputTokens"),
+                    IntValue(e, "outputTokens"), IntValue(e, "cachedTokens"), IntValue(e, "reasoningTokens"),
+                    IntValue(e, "totalTokens"), StringValue(e, "eventId"), StringValue(e, "sessionId"), StringValue(e, "projectPath", "unknown")));
             }
         }
         return result;
@@ -557,6 +597,18 @@ public sealed class FirestoreSyncService : IDisposable
             timestamp = TimestampValue(e.Timestamp), model = StringValue(e.Model), inputTokens = IntValue(e.InputTokens),
             outputTokens = IntValue(e.OutputTokens), totalDurationNanoseconds = IntValue(e.TotalDurationNanoseconds),
             source = StringValue(e.Source == OllamaUsageSource.Cloud ? "cloud" : "local"), requestId = StringValue(e.RequestId)
+        })
+    };
+
+    private object AIToolFields(AIToolUsageEvent e) => new
+    {
+        deviceId = StringValue(DeviceId),
+        @event = MapValue(new
+        {
+            timestamp = TimestampValue(e.Timestamp), tool = StringValue(e.Tool.StorageValue()), provider = StringValue(e.Provider),
+            model = StringValue(e.Model), inputTokens = IntValue(e.InputTokens), outputTokens = IntValue(e.OutputTokens),
+            cachedTokens = IntValue(e.CachedTokens), reasoningTokens = IntValue(e.ReasoningTokens), totalTokens = IntValue(e.TotalTokens),
+            eventId = StringValue(e.EventId), sessionId = StringValue(e.SessionId), projectPath = StringValue(e.ProjectPath)
         })
     };
 

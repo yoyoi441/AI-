@@ -34,6 +34,7 @@ final class UsageMonitor: ObservableObject {
     @Published private(set) var snapshot: UsageSnapshot = SnapshotStore.readSnapshot() ?? .empty
     @Published private(set) var codexSnapshot: CodexSnapshot = SnapshotStore.readCodexSnapshot() ?? .empty
     @Published private(set) var ollamaSnapshot: OllamaSnapshot = .empty
+    @Published private(set) var aiToolSnapshot: AIToolSnapshot = .empty
     @Published private(set) var remoteOllamaTodayTokens: Int = 0
     @Published private(set) var ollamaProxyState: OllamaProxyState = .stopped
     @Published var refreshIntervalSeconds: Double = 60 {
@@ -43,6 +44,8 @@ final class UsageMonitor: ObservableObject {
     private var fallbackTimer: Timer?
     private var watcher: FileSystemWatcher?
     private var codexWatcher: FileSystemWatcher?
+    private var geminiWatcher: FileSystemWatcher?
+    private var openCodeWatcher: FileSystemWatcher?
 
     private var allEvents: [UsageEvent] = []
     private var fileOffsets: [String: UInt64] = [:]
@@ -63,6 +66,9 @@ final class UsageMonitor: ObservableObject {
     private let remoteCacheStore = RemoteUsageCacheStore()
     private var ollamaProxy: OllamaProxyService?
     private var allOllamaEvents: [OllamaUsageEvent] = []
+    private var allAIToolEvents: [AIToolUsageEvent] = []
+    private var remoteAIToolEvents: [AIToolUsageEvent] = []
+    private var lastOpenCodeDatabaseModificationDate: Date?
 
     // Events other devices in the same sync group have uploaded (never includes this
     // device's own events — those are already in allEvents/allCodexEvents from the local
@@ -74,12 +80,15 @@ final class UsageMonitor: ObservableObject {
     private var claudeListener: ListenerRegistration?
     private var codexEventsListener: ListenerRegistration?
     private var ollamaEventsListener: ListenerRegistration?
+    private var aiToolEventsListener: ListenerRegistration?
     private var codexRateLimitsListener: ListenerRegistration?
     private var cloudSyncActivationInFlight = false
     private var cloudUploadsInFlight = Set<String>()
 
     private let projectsDirectory: URL
     private let codexSessionsDirectory: URL
+    private let geminiDirectory: URL
+    private let openCodeDirectory: URL
     private let deviceId = SyncPairing.deviceId
 
     init() {
@@ -87,12 +96,17 @@ final class UsageMonitor: ObservableObject {
             .appendingPathComponent(".claude/projects", isDirectory: true)
         codexSessionsDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions", isDirectory: true)
+        geminiDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".gemini/tmp", isDirectory: true)
+        openCodeDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/share/opencode", isDirectory: true)
         allOllamaEvents = ollamaStore.load()
         if let syncId = SyncPairing.syncId,
            let cache = remoteCacheStore.load(syncId: syncId) {
             remoteClaudeEvents = cache.claudeEvents
             remoteCodexEvents = cache.codexEvents
             remoteOllamaEvents = cache.ollamaEvents
+            remoteAIToolEvents = cache.aiToolEvents ?? []
         }
 
         FirestoreSync.configureIfNeeded()
@@ -117,6 +131,12 @@ final class UsageMonitor: ObservableObject {
             Task { @MainActor in self?.scheduleDebouncedRefresh() }
         }
         codexWatcher = FileSystemWatcher(rootDirectory: codexSessionsDirectory) { [weak self] in
+            Task { @MainActor in self?.scheduleDebouncedRefresh() }
+        }
+        geminiWatcher = FileSystemWatcher(rootDirectory: geminiDirectory) { [weak self] in
+            Task { @MainActor in self?.scheduleDebouncedRefresh() }
+        }
+        openCodeWatcher = FileSystemWatcher(rootDirectory: openCodeDirectory) { [weak self] in
             Task { @MainActor in self?.scheduleDebouncedRefresh() }
         }
         let ollamaEnabled = UserDefaults.standard.object(forKey: "ollamaMonitoringEnabled") == nil
@@ -192,6 +212,7 @@ final class UsageMonitor: ObservableObject {
             claudeEvents: allEvents + remoteClaudeEvents,
             codexEvents: allCodexEvents + remoteCodexEvents,
             ollamaEvents: allOllamaEvents + remoteOllamaEvents,
+            aiToolEvents: allAIToolEvents + remoteAIToolEvents,
             from: start,
             to: end
         )
@@ -203,10 +224,12 @@ final class UsageMonitor: ObservableObject {
         claudeListener?.remove()
         codexEventsListener?.remove()
         ollamaEventsListener?.remove()
+        aiToolEventsListener?.remove()
         codexRateLimitsListener?.remove()
         remoteClaudeEvents = []
         remoteCodexEvents = []
         remoteOllamaEvents = []
+        remoteAIToolEvents = []
         remoteOllamaTodayTokens = 0
         remoteCacheStore.clear()
         cloudSyncActivationInFlight = false
@@ -251,6 +274,7 @@ final class UsageMonitor: ObservableObject {
         claudeListener?.remove()
         codexEventsListener?.remove()
         ollamaEventsListener?.remove()
+        aiToolEventsListener?.remove()
         codexRateLimitsListener?.remove()
 
         claudeListener = FirestoreSync.observeClaudeEvents(
@@ -292,6 +316,18 @@ final class UsageMonitor: ObservableObject {
                 self.syncLogger.info("Received \(events.count) remote Ollama events (today: \(self.remoteOllamaTodayTokens) tokens)")
             }
         }
+        aiToolEventsListener = FirestoreSync.observeAIToolEvents(
+            syncId: syncId,
+            excludingDeviceId: deviceId,
+            initialEvents: remoteAIToolEvents
+        ) { [weak self] events in
+            Task { @MainActor in
+                guard let self else { return }
+                self.remoteAIToolEvents = events
+                self.saveRemoteCache(syncId: syncId)
+                self.refreshAITools()
+            }
+        }
         codexRateLimitsListener = FirestoreSync.observeCodexRateLimits(syncId: syncId) { [weak self] primary, secondary, eventTimestamp in
             Task { @MainActor in
                 guard let self, let eventTimestamp else { return }
@@ -316,7 +352,8 @@ final class UsageMonitor: ObservableObject {
             syncId: syncId,
             claudeEvents: remoteClaudeEvents,
             codexEvents: remoteCodexEvents,
-            ollamaEvents: remoteOllamaEvents
+            ollamaEvents: remoteOllamaEvents,
+            aiToolEvents: remoteAIToolEvents
         ))
     }
 
@@ -362,6 +399,7 @@ final class UsageMonitor: ObservableObject {
         refreshClaude()
         refreshCodex()
         refreshOllama()
+        refreshAITools()
         checkUsageAlerts()
         WidgetCenter.shared.reloadAllTimelines()
     }
@@ -387,6 +425,7 @@ final class UsageMonitor: ObservableObject {
             checkTarget(current: snapshot.todayTotalTokens, target: defaults.double(forKey: "claudeDailyTokenTarget"), providerName: "Claude Code", kind: "daily", dateKey: dateKey, lang: lang)
             checkTarget(current: codexSnapshot.todayTotalTokens, target: defaults.double(forKey: "codexDailyTokenTarget"), providerName: "Codex", kind: "daily", dateKey: dateKey, lang: lang)
             checkTarget(current: ollamaSnapshot.todayTotalTokens, target: defaults.double(forKey: "ollamaDailyTokenTarget"), providerName: "Ollama", kind: "daily", dateKey: dateKey, lang: lang)
+            checkTarget(current: aiToolSnapshot.todayTotalTokens, target: defaults.double(forKey: "aiToolsDailyTokenTarget"), providerName: L.string("aiToolsTitle", lang: lang), kind: "daily", dateKey: dateKey, lang: lang)
         }
         if defaults.bool(forKey: "windowTargetEnabled") {
             checkTarget(current: snapshot.hourlyTokensToday.tokensInWindow(window), target: defaults.double(forKey: "claudeWindowTokenTarget"), providerName: "Claude Code", kind: "window", dateKey: dateKey, lang: lang)
@@ -598,6 +637,74 @@ final class UsageMonitor: ObservableObject {
             dailyTokenTarget: 0,
             colorHex: defaults.string(forKey: "ollamaColorHex") ?? OllamaSnapshot.empty.colorHex
         ).todayTotalTokens
+    }
+
+    private func refreshAITools() {
+        var local: [AIToolUsageEvent] = []
+        let cutoff = Date().addingTimeInterval(-9 * 24 * 60 * 60)
+        let previousGemini = allAIToolEvents.filter { $0.tool == .geminiCLI }
+        let geminiFiles = findGeminiSessionFiles()
+        for url in geminiFiles {
+            guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+                  (values.contentModificationDate ?? .distantPast) >= cutoff,
+                  let data = try? Data(contentsOf: url) else { continue }
+            local.append(contentsOf: GeminiSessionParser.parse(data, fallbackSessionId: url.deletingPathExtension().lastPathComponent))
+        }
+        if local.isEmpty && !previousGemini.isEmpty { local.append(contentsOf: previousGemini) }
+        local.append(contentsOf: readOpenCodeEvents(since: cutoff))
+        allAIToolEvents = Array(Dictionary(local.map { ($0.eventId, $0) }, uniquingKeysWith: { _, latest in latest }).values)
+
+        uploadNewEventsToCloud(allAIToolEvents, watermarkKeyPrefix: "lastUploadedAIToolEventAt", timestamp: \.timestamp) { events, syncId, deviceId, completion in
+            FirestoreSync.uploadAIToolEvents(events, syncId: syncId, deviceId: deviceId, completion: completion)
+        }
+        let defaults = UserDefaults.standard
+        let dailyTarget = defaults.bool(forKey: "dailyTargetEnabled")
+            ? defaults.double(forKey: "aiToolsDailyTokenTarget") : 0
+        aiToolSnapshot = AIToolUsageComputer.compute(
+            events: allAIToolEvents + remoteAIToolEvents,
+            dailyTokenTarget: dailyTarget,
+            colorHex: defaults.string(forKey: "aiToolsColorHex") ?? AIToolSnapshot.empty.colorHex
+        )
+    }
+
+    private func findGeminiSessionFiles() -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(at: geminiDirectory, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
+        return enumerator.compactMap { $0 as? URL }.filter {
+            $0.lastPathComponent.hasPrefix("session-") && ($0.pathExtension == "json" || $0.pathExtension == "jsonl")
+        }
+    }
+
+    private func readOpenCodeEvents(since cutoff: Date) -> [AIToolUsageEvent] {
+        let previous = allAIToolEvents.filter { $0.tool == .openCode }
+        let candidates = ["opencode.db", "opencode-prod.db"].map { openCodeDirectory.appendingPathComponent($0) }
+        guard let database = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let values = try? database.resourceValues(forKeys: [.contentModificationDateKey]),
+              let modificationDate = values.contentModificationDate else { return previous }
+        if modificationDate == lastOpenCodeDatabaseModificationDate { return previous }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        let cutoffMilliseconds = Int64(cutoff.timeIntervalSince1970 * 1000)
+        process.arguments = ["-readonly", "-json", database.path, "SELECT data FROM message WHERE time_created >= \(cutoffMilliseconds)"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        let data: Data
+        do {
+            try process.run()
+            // Drain while sqlite3 is running; waiting first can deadlock when a busy
+            // OpenCode history fills the pipe buffer.
+            data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+        } catch { return previous }
+        guard process.terminationStatus == 0,
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return previous }
+        lastOpenCodeDatabaseModificationDate = modificationDate
+        let parsed: [AIToolUsageEvent] = rows.compactMap { row in
+            guard let json = row["data"] as? String, let data = json.data(using: .utf8) else { return nil }
+            return OpenCodeMessageParser.parseMessageData(data)
+        }
+        return parsed.isEmpty && !previous.isEmpty ? previous : parsed
     }
 
     private func findLogFiles(in directory: URL, extension fileExtension: String) -> [URL] {

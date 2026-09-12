@@ -18,11 +18,13 @@ struct MenuBarContentView: View, LocalizedView {
     @AppStorage("showClaudeProvider") private var showClaudeProvider = true
     @AppStorage("showCodexProvider") private var showCodexProvider = true
     @AppStorage("showOllamaProvider") private var showOllamaProvider = true
+    @AppStorage("showAIToolsProvider") private var showAIToolsProvider = true
     @AppStorage("dailyTargetEnabled") private var dailyTargetEnabled = false
     @AppStorage("windowTargetEnabled") private var windowTargetEnabled = false
     @AppStorage("claudeDailyTokenTarget") private var claudeDailyTokenTarget: Double = 0
     @AppStorage("codexDailyTokenTarget") private var codexDailyTokenTarget: Double = 0
     @AppStorage("ollamaDailyTokenTarget") private var ollamaDailyTokenTarget: Double = 0
+    @AppStorage("aiToolsDailyTokenTarget") private var aiToolsDailyTokenTarget: Double = 0
     @AppStorage("claudeWindowTokenTarget") private var claudeWindowTokenTarget: Double = 0
     @AppStorage("codexWindowTokenTarget") private var codexWindowTokenTarget: Double = 0
     @AppStorage("customWindowStartMinute") private var customWindowStartMinute: Int = DailyTimeWindow.default.startMinute
@@ -36,6 +38,10 @@ struct MenuBarContentView: View, LocalizedView {
     private var gaugeUseGradient: Bool { monitor.snapshot.appearance.useGradient }
     private var codexColor: Color { Color(hex: monitor.codexSnapshot.colorHex) ?? .green }
     private var ollamaColor: Color { Color(hex: monitor.ollamaSnapshot.colorHex) ?? .orange }
+    private var aiToolsColor: Color { Color(hex: monitor.aiToolSnapshot.colorHex) ?? .purple }
+    private var showAIToolsSection: Bool {
+        showAIToolsProvider && (monitor.aiToolSnapshot.todayTotalTokens > 0 || monitor.aiToolSnapshot.last7DaysTotalTokens > 0)
+    }
 
     var body: some View {
         ScrollView {
@@ -136,6 +142,23 @@ struct MenuBarContentView: View, LocalizedView {
                         Text(t("last7DaysFormat", formattedTokens(monitor.ollamaSnapshot.last7DaysTotalTokens)))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                }
+
+                if showAIToolsSection {
+                    Divider().padding(.vertical, 4)
+                    header(t("aiToolsTitle"), systemImage: "sparkles")
+                    Divider()
+                    aiToolsGaugeSection
+                    Divider()
+                    aiToolsTodaySection
+                    if showHourlyChart && !monitor.aiToolSnapshot.hourlyTokensToday.isEmpty {
+                        chartSection(points: monitor.aiToolSnapshot.hourlyTokensToday, color: aiToolsColor)
+                    }
+                    if showLast7Days {
+                        Divider()
+                        Text(t("last7DaysFormat", formattedTokens(monitor.aiToolSnapshot.last7DaysTotalTokens)))
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
 
@@ -537,6 +560,53 @@ struct MenuBarContentView: View, LocalizedView {
                     Text(t("unpricedModelWarning")).font(.caption2).foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    // MARK: - Other AI tools (Gemini CLI + OpenCode)
+
+    private var aiToolsGaugeSection: some View {
+        let value = monitor.aiToolSnapshot
+        let fraction = value.targetFraction ?? (value.todayTotalTokens > 0 ? 1 : 0)
+        let caption = value.dailyTokenTarget > 0
+            ? "\(formattedTokens(value.todayTotalTokens)) / \(formattedTokens(Int(value.dailyTokenTarget)))"
+            : t("aiToolsNoTargetCaption")
+        return VStack(alignment: .leading, spacing: 8) {
+            if gaugeStyle == .ring {
+                HStack {
+                    VStack(spacing: 4) {
+                        CircularGaugeRing(fraction: fraction, color: fraction >= 1 && value.targetFraction != nil ? .red : aiToolsColor, useGradient: gaugeUseGradient, lineWidth: 9) {
+                            Text(value.targetFraction == nil ? compactTokens(value.todayTotalTokens) : "\(Int((fraction * 100).rounded()))%")
+                                .font(.system(size: 15, weight: .bold))
+                        }.frame(width: 92, height: 92)
+                        Text(caption).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+            } else {
+                HStack {
+                    Text(t("dailyTargetGaugeCaption")).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(caption).font(.caption.monospacedDigit())
+                }
+                GaugeBar(fraction: fraction, color: aiToolsColor, useGradient: gaugeUseGradient)
+            }
+        }
+    }
+
+    private var aiToolsTodaySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(t("today")).font(.subheadline.bold())
+            if showTodaySummary {
+                Text(t("totalTokensFormat", formattedTokens(monitor.aiToolSnapshot.todayTotalTokens)))
+            }
+            if showModelBreakdown {
+                ForEach(monitor.aiToolSnapshot.todayBreakdown) { entry in
+                    Text(t("modelBreakdownLineFormat", entry.displayName, formattedTokens(entry.tokens)))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Text(t("aiToolsPrivacyNote")).font(.caption2).foregroundStyle(.secondary)
         }
     }
 

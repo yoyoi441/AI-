@@ -1,6 +1,6 @@
 import Foundation
 
-/// One Claude Code, Codex, or Ollama call, flattened into a single exportable row.
+/// One supported AI tool call, flattened into a single exportable row.
 /// Kept as raw per-event rows (not pre-aggregated by day/model) so a spreadsheet or
 /// script on the receiving end can group/pivot however the user actually needs —
 /// aggregating here would throw away information there's no way to recover afterward.
@@ -14,6 +14,7 @@ public struct UsageExportRow: Codable, Equatable, Sendable {
     public let outputTokens: Int
     public let cacheCreationTokens: Int
     public let cacheReadTokens: Int
+    public let reasoningTokens: Int
     public let totalTokens: Int
     /// nil for Codex, local Ollama, and models without a known public token rate — never
     /// a silent $0, matching how the in-app cost total works.
@@ -29,6 +30,7 @@ public struct UsageExportRow: Codable, Equatable, Sendable {
         outputTokens: Int,
         cacheCreationTokens: Int,
         cacheReadTokens: Int,
+        reasoningTokens: Int,
         totalTokens: Int,
         estimatedCostUSD: Double?
     ) {
@@ -41,6 +43,7 @@ public struct UsageExportRow: Codable, Equatable, Sendable {
         self.outputTokens = outputTokens
         self.cacheCreationTokens = cacheCreationTokens
         self.cacheReadTokens = cacheReadTokens
+        self.reasoningTokens = reasoningTokens
         self.totalTokens = totalTokens
         self.estimatedCostUSD = estimatedCostUSD
     }
@@ -54,6 +57,7 @@ public enum UsageExporter {
         claudeEvents: [UsageEvent],
         codexEvents: [CodexUsageEvent],
         ollamaEvents: [OllamaUsageEvent],
+        aiToolEvents: [AIToolUsageEvent],
         from start: Date,
         to end: Date
     ) -> [UsageExportRow] {
@@ -70,6 +74,7 @@ public enum UsageExporter {
                     outputTokens: event.outputTokens,
                     cacheCreationTokens: event.cacheCreationTokens,
                     cacheReadTokens: event.cacheReadTokens,
+                    reasoningTokens: 0,
                     totalTokens: event.totalTokens,
                     estimatedCostUSD: PricingTable.estimatedCostUSD(
                         model: event.model,
@@ -94,6 +99,7 @@ public enum UsageExporter {
                     outputTokens: event.outputTokens,
                     cacheCreationTokens: event.cachedInputTokens,
                     cacheReadTokens: 0,
+                    reasoningTokens: 0,
                     totalTokens: event.totalTokens,
                     estimatedCostUSD: nil
                 )
@@ -112,6 +118,7 @@ public enum UsageExporter {
                     outputTokens: event.outputTokens,
                     cacheCreationTokens: 0,
                     cacheReadTokens: 0,
+                    reasoningTokens: 0,
                     totalTokens: event.totalTokens,
                     estimatedCostUSD: event.source == .cloud
                         ? OllamaUsageComputer.estimatedCloudCostUSD(model: event.model, inputTokens: event.inputTokens, outputTokens: event.outputTokens)
@@ -119,7 +126,28 @@ public enum UsageExporter {
                 )
             }
 
-        return (claudeRows + codexRows + ollamaRows).sorted { $0.timestamp < $1.timestamp }
+        let aiToolRows = aiToolEvents
+            .filter { $0.timestamp >= start && $0.timestamp <= end }
+            .map { event -> UsageExportRow in
+                let provider = event.tool == .openCode && event.provider != "unknown"
+                    ? "OpenCode (\(event.provider))" : event.tool.displayName
+                return UsageExportRow(
+                    timestamp: event.timestamp,
+                    provider: provider,
+                    model: event.model,
+                    projectPath: event.projectPath,
+                    sessionId: event.sessionId,
+                    inputTokens: event.inputTokens,
+                    outputTokens: event.outputTokens,
+                    cacheCreationTokens: 0,
+                    cacheReadTokens: event.cachedTokens,
+                    reasoningTokens: event.reasoningTokens,
+                    totalTokens: event.totalTokens,
+                    estimatedCostUSD: nil
+                )
+            }
+
+        return (claudeRows + codexRows + ollamaRows + aiToolRows).sorted { $0.timestamp < $1.timestamp }
     }
 
     // Configured once and never mutated afterward, so shared read-only access across
@@ -132,7 +160,7 @@ public enum UsageExporter {
     }()
 
     public static func csv(rows: [UsageExportRow]) -> String {
-        var lines = ["timestamp,provider,model,project,sessionId,inputTokens,outputTokens,cacheCreationTokens,cacheReadTokens,totalTokens,estimatedCostUSD"]
+        var lines = ["timestamp,provider,model,project,sessionId,inputTokens,outputTokens,cacheCreationTokens,cacheReadTokens,reasoningTokens,totalTokens,estimatedCostUSD"]
         for row in rows {
             let cost = row.estimatedCostUSD.map { String(format: "%.4f", $0) } ?? ""
             let fields = [
@@ -145,6 +173,7 @@ public enum UsageExporter {
                 String(row.outputTokens),
                 String(row.cacheCreationTokens),
                 String(row.cacheReadTokens),
+                String(row.reasoningTokens),
                 String(row.totalTokens),
                 cost
             ]

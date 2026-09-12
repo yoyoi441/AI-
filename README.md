@@ -1,14 +1,14 @@
 # トークン見張り番
 
-Claude CodeとCodexのローカルログ、およびOllamaのAPI応答メタデータからトークン使用量を
+Claude Code、Codex、Gemini CLI、OpenCodeのローカル履歴、およびOllamaのAPI応答メタデータからトークン使用量を
 見やすく表示する常駐アプリです。Windows版とmacOS版を同じGitHub Releaseから
 配布します。
 
 ## 主な機能
 
-- Claude Code / Codex / Ollamaの本日の合計トークン数
+- Claude Code / Codex / Ollama / Gemini CLI / OpenCodeの本日の合計トークン数
 - タスクトレイ／メニューバー上の使用率表示
-- サービスごとのリング表示（Ollamaは全モデルを1リングに集約）
+- サービスごとのリング表示（Ollamaは全モデルを1リング、Gemini CLIとOpenCodeは「その他のAIツール」1リングに集約）
 - Ollama Local / Ollama Cloudの自動区分と、Cloud利用料の参考概算
 - モデル別・プロジェクト別の内訳
 - 時間帯別グラフと直近7日間の合計
@@ -34,12 +34,18 @@ Claude CodeとCodexのローカルログ、およびOllamaのAPI応答メタデ�
 
 - Windows 10 / 11（64ビット）
 - macOS 14以降（Apple Silicon / Intel）
-- Claude Code、Codex CLI、またはOllamaを同じ端末で使用していること
+- Claude Code、Codex CLI、Ollama、Gemini CLI、またはOpenCodeを同じ端末で使用していること
 
 読み取るログは次の通りです。
 
 - `~/.claude/projects`
 - `~/.codex/sessions`
+- `~/.gemini/tmp`（Gemini CLI）
+- `~/.local/share/opencode/opencode.db`（OpenCode）
+
+Gemini CLIとOpenCodeは、各ツールが保存した日時・モデル・入出力等のトークン数だけを読み取ります。
+プロンプトや回答本文は保存・同期しません。両方の内訳は保持しますが、リングが増えすぎないよう
+「その他のAIツール」1つにまとめ、使用実績がない間は自動的に隠します。
 
 ## Ollama監視
 
@@ -66,7 +72,7 @@ GitHubが公開するSHA-256ダイジェストがある場合は、インスト�
 ## 端末間同期
 
 設定の「端末間同期」で16文字のペアリングコードを共有すると、直近9日分の
-Claude Code / Codex / Ollama使用イベントをWindows版とmacOS版で合算できます。コードは
+Claude Code / Codex / Ollama / Gemini CLI / OpenCode使用イベントをWindows版とmacOS版で合算できます。コードは
 約80ビットのランダム値で、表示時は`ABCD-EFGH-JKLM-NPQR`のように区切られます。
 
 同期を有効にした端末はFirebase Authenticationへ匿名でサインインします。Firestoreでは
@@ -74,7 +80,7 @@ Claude Code / Codex / Ollama使用イベントをWindows版とmacOS版で合算�
 メンバー以外の読取り・書込み、同期グループの一覧取得、不正なトークン値を拒否します。
 
 有効化後に同期対象となる項目は日時、モデル、トークン数、接続先区分、セッション等の識別子です。
-プロンプト、応答本文、Anthropic・OpenAI・Ollamaのログイン情報やAPIキーは同期対象にしません。
+プロンプト、応答本文、各サービスのログイン情報やAPIキーは同期対象にしません。
 
 ## Windows版の開発
 

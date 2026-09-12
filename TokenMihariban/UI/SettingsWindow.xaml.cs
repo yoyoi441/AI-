@@ -355,6 +355,7 @@ public partial class SettingsWindow : Window
         stack.Children.Add(ColorRow(L.String("claudeColorLabel", lang), "gaugeColorHex", "#3B82F6"));
         stack.Children.Add(ColorRow(L.String("codexColorLabel", lang), "codexColorHex", "#22C55E"));
         stack.Children.Add(ColorRow(L.String("ollamaColorLabel", lang), "ollamaColorHex", "#F97316"));
+        stack.Children.Add(ColorRow(L.String("aiToolsColorLabel", lang), "aiToolsColorHex", "#8B5CF6"));
         stack.Children.Add(Toggle(L.String("gradientToggle", lang), settings.HasKey("gaugeUseGradient") ? settings.GetBool("gaugeUseGradient", true) : true,
             enabled => { settings.SetBool("gaugeUseGradient", enabled); _app.Monitor.Refresh(); }));
         stack.Children.Add(FooterNote(L.String("colorFooterNote", lang)));
@@ -418,6 +419,8 @@ public partial class SettingsWindow : Window
             v => settings.SetBool("showCodexProvider", v)));
         stack.Children.Add(Toggle(L.String("showOllamaProviderToggle", lang), settings.HasKey("showOllamaProvider") ? settings.GetBool("showOllamaProvider", true) : true,
             v => settings.SetBool("showOllamaProvider", v)));
+        stack.Children.Add(Toggle(L.String("showAIToolsProviderToggle", lang), settings.HasKey("showAIToolsProvider") ? settings.GetBool("showAIToolsProvider", true) : true,
+            v => settings.SetBool("showAIToolsProvider", v)));
         stack.Children.Add(FooterNote(L.String("providersNote", lang)));
 
         stack.Children.Add(SectionHeader(L.String("displayItemsHeaderMac", lang)));
@@ -466,6 +469,7 @@ public partial class SettingsWindow : Window
         dailyFieldsPanel.Children.Add(NumberField(L.String("claudeDailyTargetPlaceholder", lang), settings.GetDouble("claudeDailyTokenTarget"), v => { settings.SetDouble("claudeDailyTokenTarget", v); _app.Monitor.Refresh(); }));
         dailyFieldsPanel.Children.Add(NumberField(L.String("codexDailyTargetPlaceholder", lang), settings.GetDouble("codexDailyTokenTarget"), v => { settings.SetDouble("codexDailyTokenTarget", v); _app.Monitor.Refresh(); }));
         dailyFieldsPanel.Children.Add(NumberField(L.String("ollamaDailyTargetPlaceholder", lang), settings.GetDouble("ollamaDailyTokenTarget"), v => { settings.SetDouble("ollamaDailyTokenTarget", v); _app.Monitor.Refresh(); }));
+        dailyFieldsPanel.Children.Add(NumberField(L.String("aiToolsDailyTargetPlaceholder", lang), settings.GetDouble("aiToolsDailyTokenTarget"), v => { settings.SetDouble("aiToolsDailyTokenTarget", v); _app.Monitor.Refresh(); }));
         dailyFieldsPanel.Children.Add(FooterNote(L.String("dailyTargetNote", lang)));
         stack.Children.Add(dailyFieldsPanel);
 

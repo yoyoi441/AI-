@@ -161,16 +161,19 @@ public partial class App : Application
         var showClaude = settings.HasKey("showClaudeProvider") ? settings.GetBool("showClaudeProvider", true) : true;
         var showCodex = settings.HasKey("showCodexProvider") ? settings.GetBool("showCodexProvider", true) : true;
         var showOllama = settings.HasKey("showOllamaProvider") ? settings.GetBool("showOllamaProvider", true) : true;
+        var showAITools = settings.HasKey("showAIToolsProvider") ? settings.GetBool("showAIToolsProvider", true) : true;
 
         var newIcon = TrayIconRenderer.Render(
             _monitor.Snapshot,
             _monitor.CodexSnapshot,
             _monitor.OllamaSnapshot,
+            _monitor.AIToolSnapshot,
             metric,
             _monitor.Snapshot.Appearance.Style,
             showClaude,
             showCodex,
             showOllama,
+            showAITools,
             SystemTheme.IsDarkTaskbar()
         );
 

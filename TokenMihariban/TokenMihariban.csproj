@@ -12,7 +12,7 @@
     <RootNamespace>TokenMihariban</RootNamespace>
     <StartupObject>TokenMihariban.App</StartupObject>
     <InvariantGlobalization>false</InvariantGlobalization>
-    <Version>0.4.9</Version>
+    <Version>0.5.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -26,6 +26,10 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.20" />
   </ItemGroup>
 
 </Project>

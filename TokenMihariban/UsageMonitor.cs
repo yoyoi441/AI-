@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Microsoft.Data.Sqlite;
 using TokenMihariban.Logic;
 using TokenMihariban.Models;
 using TokenMihariban.Notifications;
@@ -28,6 +29,7 @@ public sealed class UsageMonitor : IDisposable
     public UsageSnapshot Snapshot { get; private set; } = UsageSnapshot.Empty;
     public CodexSnapshot CodexSnapshot { get; private set; } = Models.CodexSnapshot.Empty;
     public OllamaSnapshot OllamaSnapshot { get; private set; } = Models.OllamaSnapshot.Empty;
+    public AIToolSnapshot AIToolSnapshot { get; private set; } = Models.AIToolSnapshot.Empty;
     public long RemoteOllamaTodayTokens { get; private set; }
     public OllamaProxyState OllamaProxyState => _ollamaProxy.State;
     public string? OllamaProxyError => _ollamaProxy.ErrorMessage;
@@ -49,6 +51,8 @@ public sealed class UsageMonitor : IDisposable
     private System.Threading.Timer? _fallbackTimer;
     private FileSystemWatcher? _claudeWatcher;
     private FileSystemWatcher? _codexWatcher;
+    private FileSystemWatcher? _geminiWatcher;
+    private FileSystemWatcher? _openCodeWatcher;
     private System.Threading.Timer? _debounceTimer;
     private readonly object _debounceLock = new();
     private readonly object _refreshLock = new();
@@ -64,6 +68,8 @@ public sealed class UsageMonitor : IDisposable
 
     private readonly string _projectsDirectory;
     private readonly string _codexSessionsDirectory;
+    private readonly string _geminiDirectory;
+    private readonly string _openCodeDirectory;
     private NotifyIcon? _trayIcon;
     private readonly FirestoreSyncService _syncService;
     private IReadOnlyList<UsageEvent> _remoteClaudeEvents = Array.Empty<UsageEvent>();
@@ -72,6 +78,9 @@ public sealed class UsageMonitor : IDisposable
     private readonly OllamaUsageStore _ollamaStore = new();
     private readonly OllamaProxyService _ollamaProxy = new();
     private readonly List<OllamaUsageEvent> _allOllamaEvents = new();
+    private readonly List<AIToolUsageEvent> _allAIToolEvents = new();
+    private IReadOnlyList<AIToolUsageEvent> _remoteAIToolEvents = Array.Empty<AIToolUsageEvent>();
+    private DateTime? _lastOpenCodeDatabaseWriteTimeUtc;
 
     public bool IsDeviceSyncAvailable => _syncService.IsAvailable;
     public string? SyncPairingCode => _syncService.PairingCode;
@@ -81,9 +90,13 @@ public sealed class UsageMonitor : IDisposable
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         _projectsDirectory = Path.Combine(home, ".claude", "projects");
         _codexSessionsDirectory = Path.Combine(home, ".codex", "sessions");
+        _geminiDirectory = Path.Combine(home, ".gemini", "tmp");
+        _openCodeDirectory = Path.Combine(home, ".local", "share", "opencode");
 
         Directory.CreateDirectory(_projectsDirectory);
         Directory.CreateDirectory(_codexSessionsDirectory);
+        Directory.CreateDirectory(_geminiDirectory);
+        Directory.CreateDirectory(_openCodeDirectory);
 
         _syncService = new FirestoreSyncService();
         _syncService.RemoteDataChanged += OnRemoteDataChanged;
@@ -127,14 +140,16 @@ public sealed class UsageMonitor : IDisposable
     {
         _claudeWatcher = CreateWatcher(_projectsDirectory);
         _codexWatcher = CreateWatcher(_codexSessionsDirectory);
+        _geminiWatcher = CreateWatcher(_geminiDirectory, "session-*.*");
+        _openCodeWatcher = CreateWatcher(_openCodeDirectory, "*.db*");
     }
 
-    private FileSystemWatcher CreateWatcher(string directory)
+    private FileSystemWatcher CreateWatcher(string directory, string filter = "*.jsonl")
     {
         var watcher = new FileSystemWatcher(directory)
         {
             IncludeSubdirectories = true,
-            Filter = "*.jsonl",
+            Filter = filter,
             NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
         };
         watcher.Changed += (_, _) => ScheduleDebouncedRefresh();
@@ -170,18 +185,21 @@ public sealed class UsageMonitor : IDisposable
         UsageEvent[] localClaude;
         CodexUsageEvent[] localCodex;
         OllamaUsageEvent[] localOllama;
+        AIToolUsageEvent[] localAITools;
         lock (_refreshLock)
         {
             RefreshClaude();
             RefreshCodex();
             ComputeOllamaSnapshot();
+            RefreshAITools();
             CheckUsageAlerts();
             localClaude = _allEvents.ToArray();
             localCodex = _allCodexEvents.ToArray();
             localOllama = _allOllamaEvents.ToArray();
+            localAITools = _allAIToolEvents.ToArray();
         }
         SnapshotUpdated?.Invoke(this, EventArgs.Empty);
-        _syncService.UpdateLocalEvents(localClaude, localCodex, localOllama);
+        _syncService.UpdateLocalEvents(localClaude, localCodex, localOllama, localAITools);
     }
 
     public Task<string?> CreateSyncPairingCodeAsync() => _syncService.CreatePairingCodeAsync();
@@ -199,25 +217,26 @@ public sealed class UsageMonitor : IDisposable
             _remoteClaudeEvents = data.ClaudeEvents;
             _remoteCodexEvents = data.CodexEvents;
             _remoteOllamaEvents = data.OllamaEvents;
+            _remoteAIToolEvents = data.AIToolEvents;
             ComputeClaudeSnapshot();
             ComputeCodexSnapshot();
             ComputeOllamaSnapshot();
+            ComputeAIToolSnapshot();
         }
         SnapshotUpdated?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>
-    /// Raw per-event rows for the Settings export tab, covering this PC's full history —
-    /// not just today/7-day rollups. <c>_allEvents</c>/<c>_allCodexEvents</c> never drop
-    /// old entries once parsed, so any past date range is available without re-reading
-    /// log files.
+    /// Raw per-event rows for the Settings export tab, combining this PC and paired
+    /// devices just like the on-screen totals.
     /// </summary>
     public List<UsageExportRow> ExportRows(DateTime start, DateTime end)
     {
         return UsageExporter.Rows(
-            _allEvents,
-            _allCodexEvents,
-            _allOllamaEvents,
+            _allEvents.Concat(_remoteClaudeEvents).ToArray(),
+            _allCodexEvents.Concat(_remoteCodexEvents).ToArray(),
+            _allOllamaEvents.Concat(_remoteOllamaEvents).ToArray(),
+            _allAIToolEvents.Concat(_remoteAIToolEvents).ToArray(),
             start,
             end
         );
@@ -241,6 +260,7 @@ public sealed class UsageMonitor : IDisposable
             CheckTarget(Snapshot.TodayTotalTokens, settings.GetDouble("claudeDailyTokenTarget"), "Claude Code", "daily", dateKey, lang);
             CheckTarget(CodexSnapshot.TodayTotalTokens, settings.GetDouble("codexDailyTokenTarget"), "Codex", "daily", dateKey, lang);
             CheckTarget(OllamaSnapshot.TodayTotalTokens, settings.GetDouble("ollamaDailyTokenTarget"), "Ollama", "daily", dateKey, lang);
+            CheckTarget(AIToolSnapshot.TodayTotalTokens, settings.GetDouble("aiToolsDailyTokenTarget"), L.String("aiToolsTitle", lang), "daily", dateKey, lang);
         }
         if (settings.GetBool("windowTargetEnabled", false))
         {
@@ -383,6 +403,65 @@ public sealed class UsageMonitor : IDisposable
             colorHex).TodayTotalTokens;
     }
 
+    private void RefreshAITools()
+    {
+        var cutoff = DateTime.UtcNow.AddDays(-9);
+        var local = new List<AIToolUsageEvent>();
+        var previousGemini = _allAIToolEvents.Where(x => x.Tool == AIToolKind.GeminiCli).ToArray();
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(_geminiDirectory, "session-*.*", SearchOption.AllDirectories))
+            {
+                var extension = Path.GetExtension(path);
+                if (extension is not ".json" and not ".jsonl" || File.GetLastWriteTimeUtc(path) < cutoff) continue;
+                try { local.AddRange(GeminiSessionParser.Parse(File.ReadAllBytes(path), Path.GetFileNameWithoutExtension(path))); }
+                catch { }
+            }
+        }
+        catch { }
+        if (local.Count == 0 && previousGemini.Length > 0) local.AddRange(previousGemini);
+        local.AddRange(ReadOpenCodeEvents(cutoff));
+        _allAIToolEvents.Clear();
+        _allAIToolEvents.AddRange(local.GroupBy(x => x.EventId).Select(x => x.Last()));
+        ComputeAIToolSnapshot();
+    }
+
+    private IReadOnlyList<AIToolUsageEvent> ReadOpenCodeEvents(DateTime cutoff)
+    {
+        var previous = _allAIToolEvents.Where(x => x.Tool == AIToolKind.OpenCode).ToArray();
+        var database = new[] { "opencode.db", "opencode-prod.db" }.Select(x => Path.Combine(_openCodeDirectory, x)).FirstOrDefault(File.Exists);
+        if (database is null) return previous;
+        var writeTime = File.GetLastWriteTimeUtc(database);
+        if (_lastOpenCodeDatabaseWriteTimeUtc == writeTime)
+            return previous;
+        var result = new List<AIToolUsageEvent>();
+        try
+        {
+            var builder = new SqliteConnectionStringBuilder { DataSource = database, Mode = SqliteOpenMode.ReadOnly, Cache = SqliteCacheMode.Shared, DefaultTimeout = 2 };
+            using var connection = new SqliteConnection(builder.ToString());
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT data FROM message WHERE time_created >= $cutoff";
+            command.Parameters.AddWithValue("$cutoff", new DateTimeOffset(cutoff).ToUnixTimeMilliseconds());
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                if (!reader.IsDBNull(0) && OpenCodeMessageParser.ParseMessageData(reader.GetString(0)) is { } usage) result.Add(usage);
+            }
+            _lastOpenCodeDatabaseWriteTimeUtc = writeTime;
+        }
+        catch { return previous; }
+        return result.Count > 0 || previous.Length == 0 ? result : previous;
+    }
+
+    private void ComputeAIToolSnapshot()
+    {
+        var settings = AppSettings.Shared;
+        var target = settings.GetBool("dailyTargetEnabled", false) ? settings.GetDouble("aiToolsDailyTokenTarget") : 0;
+        var color = settings.GetString("aiToolsColorHex") ?? Models.AIToolSnapshot.Empty.ColorHex;
+        AIToolSnapshot = AIToolUsageComputer.Compute(_allAIToolEvents.Concat(_remoteAIToolEvents).ToArray(), target, color);
+    }
+
     private static List<string> FindLogFiles(string directory)
     {
         if (!Directory.Exists(directory)) return new List<string>();
@@ -402,6 +481,8 @@ public sealed class UsageMonitor : IDisposable
         _debounceTimer?.Dispose();
         _claudeWatcher?.Dispose();
         _codexWatcher?.Dispose();
+        _geminiWatcher?.Dispose();
+        _openCodeWatcher?.Dispose();
         _ollamaProxy.UsageCaptured -= OnOllamaUsageCaptured;
         _ollamaProxy.StateChanged -= OnOllamaProxyStateChanged;
         _ollamaProxy.Dispose();

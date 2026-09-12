@@ -44,7 +44,7 @@ internal static class TrayIconRenderer
 
     private sealed record ProviderSpec(double Fraction, Color Color, string CenterText);
 
-    public static Icon Render(UsageSnapshot snapshot, CodexSnapshot codexSnapshot, OllamaSnapshot ollamaSnapshot, GaugeMetric metric, GaugeDisplayStyle style, bool showClaude, bool showCodex, bool showOllama, bool isDarkTaskbar)
+    public static Icon Render(UsageSnapshot snapshot, CodexSnapshot codexSnapshot, OllamaSnapshot ollamaSnapshot, AIToolSnapshot aiToolSnapshot, GaugeMetric metric, GaugeDisplayStyle style, bool showClaude, bool showCodex, bool showOllama, bool showAITools, bool isDarkTaskbar)
     {
         var specs = new List<ProviderSpec>();
 
@@ -83,6 +83,12 @@ internal static class TrayIconRenderer
         {
             var color = ParseColor(ollamaSnapshot.ColorHex, Color.DarkOrange);
             specs.Add(new ProviderSpec(ollamaFraction, color, ((int)Math.Round(ollamaFraction * 100)).ToString()));
+        }
+        if (showAITools && aiToolSnapshot.TodayTotalTokens > 0)
+        {
+            var color = ParseColor(aiToolSnapshot.ColorHex, Color.MediumPurple);
+            var fraction = aiToolSnapshot.TargetFraction ?? 1;
+            specs.Add(new ProviderSpec(fraction, color, aiToolSnapshot.TargetFraction is null ? CompactTokens(aiToolSnapshot.TodayTotalTokens) : ((int)Math.Round(fraction * 100)).ToString()));
         }
 
         const int canvasSize = 32;
@@ -180,6 +186,13 @@ internal static class TrayIconRenderer
         if (sanitized.Length != 6 || !int.TryParse(sanitized, System.Globalization.NumberStyles.HexNumber, null, out var rgb)) return fallback;
         return Color.FromArgb((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
     }
+
+    private static string CompactTokens(long count) => count switch
+    {
+        >= 1_000_000 => (count / 1_000_000d).ToString("0.#") + "M",
+        >= 1_000 => (count / 1_000d).ToString("0.#") + "K",
+        _ => count.ToString()
+    };
 
     private static double TimeFraction(DateTime start, DateTime end)
     {

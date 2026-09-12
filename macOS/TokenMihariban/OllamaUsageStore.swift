@@ -42,6 +42,7 @@ struct RemoteUsageCache: Codable {
     var claudeEvents: [UsageEvent]
     var codexEvents: [CodexUsageEvent]
     var ollamaEvents: [OllamaUsageEvent]
+    var aiToolEvents: [AIToolUsageEvent]?
 }
 
 /// Persists the last successful cross-device result. Besides keeping remote totals

@@ -11,7 +11,7 @@ struct TokenMiharibanApp: App {
         MenuBarExtra {
             MenuBarContentView(monitor: monitor)
         } label: {
-            MenuBarLabel(snapshot: monitor.snapshot, codexSnapshot: monitor.codexSnapshot, ollamaSnapshot: monitor.ollamaSnapshot)
+            MenuBarLabel(snapshot: monitor.snapshot, codexSnapshot: monitor.codexSnapshot, ollamaSnapshot: monitor.ollamaSnapshot, aiToolSnapshot: monitor.aiToolSnapshot)
         }
         .menuBarExtraStyle(.window)
 
@@ -69,10 +69,12 @@ private struct MenuBarLabel: View {
     let snapshot: UsageSnapshot
     let codexSnapshot: CodexSnapshot
     let ollamaSnapshot: OllamaSnapshot
+    let aiToolSnapshot: AIToolSnapshot
     @AppStorage("menuBarMetric") private var menuBarMetricRaw = GaugeMetric.tokenUsage.rawValue
     @AppStorage("showClaudeProvider") private var showClaudeProvider = true
     @AppStorage("showCodexProvider") private var showCodexProvider = true
     @AppStorage("showOllamaProvider") private var showOllamaProvider = true
+    @AppStorage("showAIToolsProvider") private var showAIToolsProvider = true
     private var metric: GaugeMetric { GaugeMetric(rawValue: menuBarMetricRaw) ?? .tokenUsage }
 
     private var specs: [ProviderIconSpec] {
@@ -111,6 +113,14 @@ private struct MenuBarLabel: View {
                 result.append(ProviderIconSpec(fraction: fraction, color: color, centerText: "\(Int((fraction * 100).rounded()))"))
             } else {
                 result.append(ProviderIconSpec(fraction: 1, color: color, centerText: compactTokens(ollamaSnapshot.todayTotalTokens)))
+            }
+        }
+        if showAIToolsProvider, aiToolSnapshot.todayTotalTokens > 0 {
+            let color = Color(hex: aiToolSnapshot.colorHex) ?? .purple
+            if let fraction = aiToolSnapshot.targetFraction {
+                result.append(ProviderIconSpec(fraction: fraction, color: color, centerText: "\(Int((fraction * 100).rounded()))"))
+            } else {
+                result.append(ProviderIconSpec(fraction: 1, color: color, centerText: compactTokens(aiToolSnapshot.todayTotalTokens)))
             }
         }
         return result
