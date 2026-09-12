@@ -369,19 +369,15 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					69F3B65428D12386AD4856CE = {
-						DevelopmentTeam = 7RW5G46B22;
 						ProvisioningStyle = Automatic;
 					};
 					6E97C317F002EB5B78F6589D = {
-						DevelopmentTeam = 7RW5G46B22;
 						ProvisioningStyle = Automatic;
 					};
 					FCD643E83F9907C0D1AFF05E = {
-						DevelopmentTeam = 7RW5G46B22;
 						ProvisioningStyle = Automatic;
 					};
 					FEBCFF68287F151DF98DF53D = {
-						DevelopmentTeam = 7RW5G46B22;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -572,14 +568,13 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 7RW5G46B22;
 				INFOPLIST_FILE = ClaudeUsageMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.enomotosora.ClaudeUsageMobile;
+				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMiharibanMobile;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -594,14 +589,13 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 7RW5G46B22;
 				INFOPLIST_FILE = ClaudeUsageMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.enomotosora.ClaudeUsageMobile;
+				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMiharibanMobile;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -714,7 +708,6 @@
 				CODE_SIGN_ENTITLEMENTS = ClaudeUsageMobileWidgetExtension/ClaudeUsageMobileWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 7RW5G46B22;
 				INFOPLIST_FILE = ClaudeUsageMobileWidgetExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -722,7 +715,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.enomotosora.ClaudeUsageMobile.WidgetExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMiharibanMobile.WidgetExtension;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 6.0;
@@ -737,7 +730,6 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 11;
-				DEVELOPMENT_TEAM = 7RW5G46B22;
 				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = ClaudeUsageWidgetExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -759,7 +751,6 @@
 				CODE_SIGN_ENTITLEMENTS = ClaudeUsageMobileWidgetExtension/ClaudeUsageMobileWidgetExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 7RW5G46B22;
 				INFOPLIST_FILE = ClaudeUsageMobileWidgetExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -767,7 +758,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.enomotosora.ClaudeUsageMobile.WidgetExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.yoyoi441.TokenMiharibanMobile.WidgetExtension;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 6.0;
@@ -782,7 +773,6 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 11;
-				DEVELOPMENT_TEAM = 7RW5G46B22;
 				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_FILE = ClaudeUsageWidgetExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
